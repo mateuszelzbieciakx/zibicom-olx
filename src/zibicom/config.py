@@ -69,6 +69,8 @@ class Settings(BaseSettings):
         r2_public_base_url: Publiczny adres, pod ktorym OLX pobiera zdjecia.
         r2_access_key_id: Identyfikator klucza dostepowego R2 (sekret).
         r2_secret_access_key: Sekretny klucz dostepowy R2 (sekret).
+        gemini_api_key: Klucz API Gemini (sekret).
+        gemini_model: Nazwa modelu Gemini uzywanego do rozpoznawania zdjec.
     """
 
     model_config = SettingsConfigDict(
@@ -106,6 +108,11 @@ class Settings(BaseSettings):
     r2_secret_access_key: SecretStr = Field(
         default_factory=partial(_read_local_secret, "r2_secret_access_key")
     )
+
+    gemini_api_key: SecretStr = Field(
+        default_factory=partial(_read_local_secret, "gemini_api_key")
+    )
+    gemini_model: str = "gemini-3.6-flash"
 
     @computed_field  # type: ignore[prop-decorator]
     @property
