@@ -1,0 +1,197 @@
+{
+  "info": {
+    "name": "zibicom-olx",
+    "description": "Warstwa poczekalni (intake) - upload zdjec, rozpoznanie AI, przeglad i zatwierdzanie pozycji przed publikacja na OLX. Foldery ulozone w kolejnosci workflow: Platformy -> Upload -> Rozpoznanie AI -> Przeglad i zatwierdzanie.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8000",
+      "type": "string"
+    },
+    {
+      "key": "batch_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "item_id",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Platformy",
+      "item": [
+        {
+          "name": "GET Slownik platform",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/platforms",
+              "host": ["{{base_url}}"],
+              "path": ["api", "platforms"]
+            },
+            "description": "Slownik platform (id, code, name, manufacturer, generation) do listy wyboru w formularzu korekty."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "1. Upload",
+      "item": [
+        {
+          "name": "POST Utworz partie (upload zdjec)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    const body = pm.response.json();",
+                  "    pm.collectionVariables.set('batch_id', body.batch_id);",
+                  "    pm.test('batch_id zapisane', function () {",
+                  "        pm.expect(body.batch_id).to.be.a('number');",
+                  "    });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "files",
+                  "type": "file",
+                  "src": [],
+                  "description": "Zdjecia w kolejnosci wgrania - kolejnosc niesie informacje o granicach egzemplarzy (przod/tyl/wnetrze kolejnych sztuk)."
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/api/intake/batches",
+              "host": ["{{base_url}}"],
+              "path": ["api", "intake", "batches"]
+            },
+            "description": "Tworzy nowa partie poczekalni i wgrywa zdjecia do R2. Zapisuje batch_id do zmiennej kolekcji."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "2. Rozpoznanie AI",
+      "item": [
+        {
+          "name": "POST Rozpoznaj i zgrupuj partie",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/intake/batches/{{batch_id}}/extract",
+              "host": ["{{base_url}}"],
+              "path": ["api", "intake", "batches", "{{batch_id}}", "extract"]
+            },
+            "description": "Puszcza zdjecia partii przez rozpoznanie Gemini i grupuje je w pozycje (intake_item)."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "3. Przeglad i zatwierdzanie",
+      "item": [
+        {
+          "name": "GET Lista pozycji partii",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    const items = pm.response.json();",
+                  "    if (items.length > 0) {",
+                  "        pm.collectionVariables.set('item_id', items[0].id);",
+                  "    }",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/intake/batches/{{batch_id}}/items",
+              "host": ["{{base_url}}"],
+              "path": ["api", "intake", "batches", "{{batch_id}}", "items"]
+            },
+            "description": "Pozycje partii gotowe do zatwierdzenia - z nazwa platformy, ostrzezeniem AI i lista URL-i zdjec. Zapisuje id pierwszej pozycji do item_id."
+          },
+          "response": []
+        },
+        {
+          "name": "PATCH Koryguj pozycje",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"title\": \"Poprawiony tytul\",\n    \"platform_id\": 1,\n    \"platform_other\": null,\n    \"price_pln\": 149.99,\n    \"condition\": \"used\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/intake/items/{{item_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "intake", "items", "{{item_id}}"]
+            },
+            "description": "Reczna korekta pol pozycji (title, platform_id, platform_other, price_pln, condition). Wysylaj tylko pola, ktore rzeczywiscie zmieniasz."
+          },
+          "response": []
+        },
+        {
+          "name": "POST Zatwierdz pozycje",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/intake/items/{{item_id}}/approve",
+              "host": ["{{base_url}}"],
+              "path": ["api", "intake", "items", "{{item_id}}", "approve"]
+            },
+            "description": "Zatwierdza pozycje - wymaga wypelnionego tytulu i ceny, inaczej 400 z czytelnym komunikatem po polsku."
+          },
+          "response": []
+        },
+        {
+          "name": "POST Odrzuc pozycje",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/intake/items/{{item_id}}/reject",
+              "host": ["{{base_url}}"],
+              "path": ["api", "intake", "items", "{{item_id}}", "reject"]
+            },
+            "description": "Odrzuca pozycje (np. duplikat albo zdjecie ktore nie przedstawia egzemplarza do sprzedazy)."
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}

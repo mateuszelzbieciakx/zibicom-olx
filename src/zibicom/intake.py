@@ -1,0 +1,805 @@
+"""Warstwa poczekalni (staging) dla partii zdjec przetwarzanych przez AI.
+
+Rozpoznanie obrazem jest niepewne (model myli ceny i czasem tytuly), wiec
+wyniki NIE trafiaja bezposrednio do tabel produkcyjnych `game`/`listing` -
+zyja w `intake_batch`/`intake_item`/`intake_photo`, dopoki czlowiek ich nie
+zatwierdzi. Publikacja zatwierdzonych pozycji do OLX to kolejny krok, poza
+zakresem tego modulu.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from decimal import Decimal
+from typing import Any, Literal
+
+from pydantic import BaseModel, field_validator
+from sqlalchemy import Row, text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from zibicom import grouping, olx, photos, vision
+from zibicom.config import get_settings
+from zibicom.models import PlatformCode
+
+logger = logging.getLogger(__name__)
+
+
+class IntakeError(Exception):
+    """Blad domenowy warstwy intake - komunikat po polsku, gotowy dla klienta."""
+
+
+class IntakeNotFoundError(IntakeError):
+    """Zadany zasob (partia albo pozycja) nie istnieje."""
+
+
+class IntakeValidationError(IntakeError):
+    """Zadanie narusza regule biznesowa poczekalni."""
+
+
+class PlatformView(BaseModel):
+    """Wpis slownika platform do listy wyboru.
+
+    Attributes:
+        id: Identyfikator platformy (uzywany jako platform_id w intake_item).
+        code: Kod platformy zgodny z PlatformCode.
+        name: Nazwa wyswietlana.
+        manufacturer: Producent.
+        generation: Etykieta generacji sprzetu, jesli dotyczy.
+    """
+
+    id: int
+    code: str
+    name: str
+    manufacturer: str
+    generation: str | None
+
+
+class IntakeItemView(BaseModel):
+    """Pozycja poczekalni gotowa do wyswietlenia w widoku zatwierdzania.
+
+    Attributes:
+        id: Identyfikator pozycji.
+        batch_id: Partia, do ktorej nalezy pozycja.
+        position: Kolejnosc pozycji w obrebie partii.
+        title: Tytul (moze byc None, gdy AI go nie odczytalo).
+        platform_id: Identyfikator platformy w slowniku, jesli przypisana.
+        platform_code: Kod platformy, jesli przypisana.
+        platform_name: Nazwa platformy, jesli przypisana.
+        platform_manufacturer: Producent platformy, jesli przypisana.
+        platform_other: Opisowa platforma, gdy platform_code == "other".
+        price_pln: Cena w PLN (moze byc None).
+        condition: Stan egzemplarza (moze byc None).
+        ai_warning: Zbiorcze ostrzezenie z grupowania AI.
+        status: Status pozycji w cyklu zycia poczekalni.
+        listing_id: Identyfikator opublikowanej oferty, jesli juz istnieje.
+        photo_urls: Publiczne URL-e zdjec pozycji, w kolejnosci.
+    """
+
+    id: int
+    batch_id: int
+    position: int
+    title: str | None
+    platform_id: int | None
+    platform_code: str | None
+    platform_name: str | None
+    platform_manufacturer: str | None
+    platform_other: str | None
+    price_pln: Decimal | None
+    condition: str | None
+    ai_warning: str | None
+    status: str
+    listing_id: int | None
+    photo_urls: list[str]
+
+
+class IntakeItemUpdate(BaseModel):
+    """Korekta pol pozycji poczekalni wprowadzana recznie przez czlowieka.
+
+    Wszystkie pola sa opcjonalne - w PATCH przesyla sie tylko to, co sie
+    zmienia (`model_fields_set` decyduje, co trafi do UPDATE-u).
+
+    Attributes:
+        title: Poprawiony tytul.
+        platform_id: Poprawiona platforma (id ze slownika `platform`).
+        platform_other: Opis platformy, gdy platform_id wskazuje na "other".
+        price_pln: Poprawiona cena w PLN.
+        condition: Poprawiony stan egzemplarza.
+    """
+
+    title: str | None = None
+    platform_id: int | None = None
+    platform_other: str | None = None
+    price_pln: Decimal | None = None
+    condition: Literal["new", "used"] | None = None
+
+    @field_validator("price_pln")
+    @classmethod
+    def _cena_nieujemna(cls, value: Decimal | None) -> Decimal | None:
+        """Odrzuca ujemna cene przed wyslaniem jej do bazy.
+
+        Args:
+            value: Poprawiona cena w PLN (moze byc None).
+
+        Returns:
+            Cene bez zmian.
+
+        Raises:
+            ValueError: Gdy cena jest ujemna.
+        """
+        if value is not None and value < 0:
+            raise ValueError("Cena nie moze byc ujemna.")
+        return value
+
+
+_ITEM_VIEW_SELECT = """\
+SELECT
+    ii.id,
+    ii.batch_id,
+    ii.position,
+    ii.title,
+    ii.platform_id,
+    p.code AS platform_code,
+    p.name AS platform_name,
+    p.manufacturer::TEXT AS platform_manufacturer,
+    ii.platform_other,
+    ii.price_pln,
+    ii.condition::TEXT AS condition,
+    ii.ai_warning,
+    ii.status::TEXT AS status,
+    ii.listing_id
+FROM intake_item ii
+LEFT JOIN platform p ON p.id = ii.platform_id
+"""
+
+
+async def _batch_exists(session: AsyncSession, batch_id: int) -> bool:
+    """Sprawdza, czy partia o podanym id istnieje.
+
+    Args:
+        session: Sesja bazy danych.
+        batch_id: Identyfikator partii.
+
+    Returns:
+        True, jesli partia istnieje.
+    """
+    result = await session.execute(
+        text("SELECT 1 FROM intake_batch WHERE id = :batch_id"),
+        {"batch_id": batch_id},
+    )
+    return result.first() is not None
+
+
+async def _photo_urls_for_item(session: AsyncSession, item_id: int) -> list[str]:
+    """Zwraca publiczne URL-e zdjec przypisanych do pozycji, w kolejnosci.
+
+    Args:
+        session: Sesja bazy danych.
+        item_id: Identyfikator pozycji.
+
+    Returns:
+        Lista URL-i zdjec posortowana wg intake_photo.position.
+    """
+    result = await session.execute(
+        text(
+            "SELECT public_url FROM intake_photo "
+            "WHERE item_id = :item_id ORDER BY position"
+        ),
+        {"item_id": item_id},
+    )
+    return [row[0] for row in result.all()]
+
+
+def _row_to_item_view(row: Row[Any], photo_urls: list[str]) -> IntakeItemView:
+    """Sklada wiersz z `_ITEM_VIEW_SELECT` i URL-e zdjec w IntakeItemView.
+
+    Args:
+        row: Wiersz (mapping) zwrocony przez zapytanie `_ITEM_VIEW_SELECT`.
+        photo_urls: URL-e zdjec pozycji, w kolejnosci.
+
+    Returns:
+        Zlozony widok pozycji poczekalni.
+    """
+    mapping = row._mapping
+    return IntakeItemView(
+        id=mapping["id"],
+        batch_id=mapping["batch_id"],
+        position=mapping["position"],
+        title=mapping["title"],
+        platform_id=mapping["platform_id"],
+        platform_code=mapping["platform_code"],
+        platform_name=mapping["platform_name"],
+        platform_manufacturer=mapping["platform_manufacturer"],
+        platform_other=mapping["platform_other"],
+        price_pln=mapping["price_pln"],
+        condition=mapping["condition"],
+        ai_warning=mapping["ai_warning"],
+        status=mapping["status"],
+        listing_id=mapping["listing_id"],
+        photo_urls=photo_urls,
+    )
+
+
+async def _get_item_view(session: AsyncSession, item_id: int) -> IntakeItemView:
+    """Pobiera pelny widok jednej pozycji poczekalni.
+
+    Args:
+        session: Sesja bazy danych.
+        item_id: Identyfikator pozycji.
+
+    Returns:
+        Widok pozycji.
+
+    Raises:
+        IntakeNotFoundError: Gdy pozycja nie istnieje.
+    """
+    result = await session.execute(
+        text(f"{_ITEM_VIEW_SELECT} WHERE ii.id = :item_id"),
+        {"item_id": item_id},
+    )
+    row = result.first()
+    if row is None:
+        raise IntakeNotFoundError(f"Pozycja o id {item_id} nie istnieje.")
+
+    photo_urls = await _photo_urls_for_item(session, item_id)
+    return _row_to_item_view(row, photo_urls)
+
+
+async def create_batch(
+    session: AsyncSession, files: list[tuple[str | None, bytes]]
+) -> int:
+    """Tworzy nowa partie poczekalni i wgrywa jej zdjecia do R2.
+
+    Kolejnosc plikow na wejsciu jest zachowywana jako `intake_photo.position`
+    - ta kolejnosc niesie informacje o granicach egzemplarzy, wykorzystywana
+    pozniej przez `extract_batch`/`zibicom.grouping.group_photos`.
+
+    Args:
+        session: Sesja bazy danych.
+        files: Lista (nazwa_pliku, surowe_bajty) w kolejnosci wgrania.
+
+    Returns:
+        Identyfikator utworzonej partii.
+
+    Raises:
+        IntakeValidationError: Gdy lista plikow jest pusta albo ktorys plik
+            nie daje sie zdekodowac jako obraz.
+    """
+    if not files:
+        raise IntakeValidationError("Nalezy przeslac co najmniej jedno zdjecie.")
+
+    batch_result = await session.execute(
+        text("INSERT INTO intake_batch DEFAULT VALUES RETURNING id")
+    )
+    batch_id = batch_result.scalar_one()
+
+    for position, (filename, raw) in enumerate(files, start=1):
+        try:
+            normalized = photos.normalize_photo(raw)
+        except ValueError as exc:
+            raise IntakeValidationError(
+                f"Plik {filename or f'#{position}'} nie jest poprawnym zdjeciem: {exc}"
+            ) from exc
+
+        public_url = photos.upload_photo(normalized)
+
+        await session.execute(
+            text(
+                "INSERT INTO intake_photo "
+                "(batch_id, position, original_filename, public_url) "
+                "VALUES (:batch_id, :position, :filename, :public_url)"
+            ),
+            {
+                "batch_id": batch_id,
+                "position": position,
+                "filename": filename,
+                "public_url": public_url,
+            },
+        )
+
+    await session.commit()
+    return batch_id
+
+
+async def _platform_id_for_code(
+    session: AsyncSession, code: PlatformCode
+) -> int | None:
+    """Odnajduje id platformy w slowniku po jej kodzie.
+
+    Args:
+        session: Sesja bazy danych.
+        code: Kod platformy rozpoznany przez AI.
+
+    Returns:
+        Identyfikator platformy, albo None, gdy kodu nie ma w slowniku
+        (np. slownik nie zostal jeszcze zaladowany dla nowej platformy).
+    """
+    result = await session.execute(
+        text("SELECT id FROM platform WHERE code = :code"),
+        {"code": code.value},
+    )
+    row = result.first()
+    return row[0] if row is not None else None
+
+
+async def extract_batch(session: AsyncSession, batch_id: int) -> int:
+    """Puszcza zdjecia partii przez rozpoznanie AI i grupuje je w pozycje.
+
+    Args:
+        session: Sesja bazy danych.
+        batch_id: Identyfikator partii.
+
+    Returns:
+        Liczba utworzonych pozycji (intake_item).
+
+    Raises:
+        IntakeNotFoundError: Gdy partia nie istnieje.
+        IntakeError: Gdy pobranie ktoregos zdjecia z R2 sie nie powiedzie.
+    """
+    if not await _batch_exists(session, batch_id):
+        raise IntakeNotFoundError(f"Partia o id {batch_id} nie istnieje.")
+
+    await session.execute(
+        text("UPDATE intake_batch SET status = 'extracting' WHERE id = :batch_id"),
+        {"batch_id": batch_id},
+    )
+
+    photo_rows = (
+        await session.execute(
+            text(
+                "SELECT id, public_url FROM intake_photo "
+                "WHERE batch_id = :batch_id ORDER BY position"
+            ),
+            {"batch_id": batch_id},
+        )
+    ).all()
+
+    try:
+        extractions = []
+        for photo_id, public_url in photo_rows:
+            raw = photos.download_photo(public_url)
+            extraction = vision.recognize_photo(raw)
+            await session.execute(
+                text(
+                    "UPDATE intake_photo SET ai_raw = CAST(:ai_raw AS jsonb) "
+                    "WHERE id = :photo_id"
+                ),
+                {
+                    "photo_id": photo_id,
+                    "ai_raw": json.dumps(extraction.model_dump(mode="json")),
+                },
+            )
+            extractions.append(extraction)
+
+        groups = grouping.group_photos(extractions)
+
+        photo_ids = iter(row[0] for row in photo_rows)
+        created = 0
+        for position, group in enumerate(groups, start=1):
+            platform_id = await _platform_id_for_code(session, group.platform)
+
+            item_result = await session.execute(
+                text(
+                    "INSERT INTO intake_item "
+                    "(batch_id, position, title, platform_id, platform_other, "
+                    " price_pln, condition, ai_warning) "
+                    "VALUES (:batch_id, :position, :title, :platform_id, "
+                    " :platform_other, :price_pln, "
+                    " CAST(:condition AS listing_condition), :ai_warning) "
+                    "RETURNING id"
+                ),
+                {
+                    "batch_id": batch_id,
+                    "position": position,
+                    "title": group.title,
+                    "platform_id": platform_id,
+                    "platform_other": group.platform_other,
+                    "price_pln": group.price_pln,
+                    "condition": group.condition,
+                    "ai_warning": group.warning,
+                },
+            )
+            item_id = item_result.scalar_one()
+
+            group_photo_ids = [next(photo_ids) for _ in group.photos]
+            await session.execute(
+                text(
+                    "UPDATE intake_photo SET item_id = :item_id "
+                    "WHERE id = ANY(:photo_ids)"
+                ),
+                {"item_id": item_id, "photo_ids": group_photo_ids},
+            )
+            created += 1
+
+        await session.execute(
+            text("UPDATE intake_batch SET status = 'review' WHERE id = :batch_id"),
+            {"batch_id": batch_id},
+        )
+    except Exception as exc:
+        logger.exception("Rozpoznawanie partii %s nie powiodlo sie.", batch_id)
+        await session.rollback()
+        await session.execute(
+            text("UPDATE intake_batch SET status = 'failed' WHERE id = :batch_id"),
+            {"batch_id": batch_id},
+        )
+        await session.commit()
+        raise IntakeError(
+            f"Rozpoznawanie partii {batch_id} nie powiodlo sie: {exc}"
+        ) from exc
+
+    await session.commit()
+    return created
+
+
+async def list_items(session: AsyncSession, batch_id: int) -> list[IntakeItemView]:
+    """Zwraca pozycje partii przygotowane do zatwierdzenia przez czlowieka.
+
+    Args:
+        session: Sesja bazy danych.
+        batch_id: Identyfikator partii.
+
+    Returns:
+        Pozycje partii w kolejnosci `intake_item.position`, kazda ze
+        skladowymi nazwy platformy i lista URL-i wlasnych zdjec.
+
+    Raises:
+        IntakeNotFoundError: Gdy partia nie istnieje.
+    """
+    if not await _batch_exists(session, batch_id):
+        raise IntakeNotFoundError(f"Partia o id {batch_id} nie istnieje.")
+
+    rows = (
+        await session.execute(
+            text(
+                f"{_ITEM_VIEW_SELECT} "
+                "WHERE ii.batch_id = :batch_id ORDER BY ii.position"
+            ),
+            {"batch_id": batch_id},
+        )
+    ).all()
+
+    items = []
+    for row in rows:
+        photo_urls = await _photo_urls_for_item(session, row._mapping["id"])
+        items.append(_row_to_item_view(row, photo_urls))
+    return items
+
+
+async def update_item(
+    session: AsyncSession, item_id: int, payload: IntakeItemUpdate
+) -> IntakeItemView:
+    """Zapisuje reczna korekte pol pozycji poczekalni.
+
+    Args:
+        session: Sesja bazy danych.
+        item_id: Identyfikator pozycji.
+        payload: Pola do zmiany (tylko jawnie ustawione trafiaja do UPDATE-u).
+
+    Returns:
+        Zaktualizowany widok pozycji.
+
+    Raises:
+        IntakeNotFoundError: Gdy pozycja albo wskazana platforma nie istnieje.
+        IntakeValidationError: Gdy pozycja jest juz opublikowana, albo brak
+            pol do zmiany.
+    """
+    current = await _get_item_view(session, item_id)
+    if current.status == "published":
+        raise IntakeValidationError("Nie mozna edytowac juz opublikowanej pozycji.")
+
+    fields = payload.model_dump(exclude_unset=True)
+    if not fields:
+        raise IntakeValidationError("Brak pol do zmiany.")
+
+    if "platform_id" in fields and fields["platform_id"] is not None:
+        exists = await session.execute(
+            text("SELECT 1 FROM platform WHERE id = :platform_id"),
+            {"platform_id": fields["platform_id"]},
+        )
+        if exists.first() is None:
+            raise IntakeValidationError(
+                f"Platforma o id {fields['platform_id']} nie istnieje."
+            )
+
+    assignments = []
+    params: dict[str, Any] = {"item_id": item_id}
+    for field, value in fields.items():
+        target = (
+            f"CAST(:{field} AS listing_condition)"
+            if field == "condition"
+            else f":{field}"
+        )
+        assignments.append(f"{field} = {target}")
+        params[field] = value
+
+    await session.execute(
+        text(f"UPDATE intake_item SET {', '.join(assignments)} WHERE id = :item_id"),
+        params,
+    )
+    await session.commit()
+    return await _get_item_view(session, item_id)
+
+
+async def approve_item(session: AsyncSession, item_id: int) -> IntakeItemView:
+    """Zatwierdza pozycje poczekalni po walidacji kompletnosci danych.
+
+    Args:
+        session: Sesja bazy danych.
+        item_id: Identyfikator pozycji.
+
+    Returns:
+        Zatwierdzony widok pozycji.
+
+    Raises:
+        IntakeNotFoundError: Gdy pozycja nie istnieje.
+        IntakeValidationError: Gdy pozycja nie ma statusu "pending", albo
+            brakuje jej tytulu lub ceny.
+    """
+    current = await _get_item_view(session, item_id)
+    if current.status != "pending":
+        raise IntakeValidationError(
+            f"Pozycja ma status '{current.status}' - zatwierdzic mozna tylko "
+            "pozycje ze statusem 'pending'."
+        )
+
+    problems = []
+    if not current.title:
+        problems.append("brak tytulu")
+    if current.price_pln is None:
+        problems.append("brak ceny")
+    if problems:
+        raise IntakeValidationError(
+            "Nie mozna zatwierdzic pozycji: " + ", ".join(problems) + "."
+        )
+
+    await session.execute(
+        text("UPDATE intake_item SET status = 'approved' WHERE id = :item_id"),
+        {"item_id": item_id},
+    )
+    await session.commit()
+    return await _get_item_view(session, item_id)
+
+
+async def reject_item(session: AsyncSession, item_id: int) -> IntakeItemView:
+    """Odrzuca pozycje poczekalni.
+
+    Args:
+        session: Sesja bazy danych.
+        item_id: Identyfikator pozycji.
+
+    Returns:
+        Odrzucony widok pozycji.
+
+    Raises:
+        IntakeNotFoundError: Gdy pozycja nie istnieje.
+        IntakeValidationError: Gdy pozycja nie ma statusu "pending".
+    """
+    current = await _get_item_view(session, item_id)
+    if current.status != "pending":
+        raise IntakeValidationError(
+            f"Pozycja ma status '{current.status}' - odrzucic mozna tylko "
+            "pozycje ze statusem 'pending'."
+        )
+
+    await session.execute(
+        text("UPDATE intake_item SET status = 'rejected' WHERE id = :item_id"),
+        {"item_id": item_id},
+    )
+    await session.commit()
+    return await _get_item_view(session, item_id)
+
+
+async def _find_or_create_game(
+    session: AsyncSession, title: str, platform_id: int
+) -> int:
+    """Znajduje istniejaca `game` po (lower(title), platform_id) albo ja tworzy.
+
+    Brak wyscigu miedzy SELECT-em a INSERT-em (klasyczny problem UPSERT-u
+    bez unikalnego indeksu) nie jest tu problemem: publikacja jest
+    wywolywana recznie, pojedynczo, dla JEDNEJ pozycji na raz
+    (POST /api/intake/items/{id}/publish) - nie ma wspolbieznych zadan o ta
+    sama pare (tytul, platforma), ktore wymagalyby ON CONFLICT.
+
+    Args:
+        session: Sesja bazy danych.
+        title: Tytul gry (dopasowanie case-insensitive).
+        platform_id: Id platformy.
+
+    Returns:
+        Id istniejacej albo nowo utworzonej `game`.
+    """
+    existing = (
+        await session.execute(
+            text(
+                "SELECT id FROM game WHERE lower(title) = lower(:title) "
+                "AND platform_id = :platform_id"
+            ),
+            {"title": title, "platform_id": platform_id},
+        )
+    ).first()
+    if existing is not None:
+        return existing[0]
+
+    created = await session.execute(
+        text(
+            "INSERT INTO game (title, platform_id) VALUES (:title, :platform_id) "
+            "RETURNING id"
+        ),
+        {"title": title, "platform_id": platform_id},
+    )
+    return created.scalar_one()
+
+
+async def publish_item(session: AsyncSession, item_id: int) -> IntakeItemView:
+    """Publikuje zatwierdzona pozycje na OLX i promuje ja do tabel produkcyjnych.
+
+    Wykonywane w JEDNEJ transakcji: znalezienie/utworzenie `game`, utworzenie
+    `listing` i `listing_photo`, wywolanie OLX (`olx.create_advert`), a na
+    koniec ustawienie `intake_item.status='published'` razem z `listing_id`.
+    Cokolwiek zawiedzie po drodze wycofuje CALOSC - nie moze zostac
+    ogloszenie na OLX bez odpowiadajacego mu rekordu w bazie.
+
+    Token OLX jest zdobywany PRZED jakimkolwiek zapisem do bazy w tej
+    funkcji - `olx.get_access_token` moze przy okazji zacommitowac odswiezony
+    token (rotacja refresh tokenu), a zrobione pozniej przedwczesnie
+    zatwierdziloby czesciowy stan tej transakcji (patrz docstring
+    `olx.get_access_token` i `olx.create_advert`).
+
+    Args:
+        session: Sesja bazy danych.
+        item_id: Identyfikator pozycji poczekalni.
+
+    Returns:
+        Opublikowany widok pozycji (status='published', wypelnione listing_id).
+
+    Raises:
+        IntakeNotFoundError: Gdy pozycja nie istnieje.
+        IntakeValidationError: Gdy pozycja nie ma statusu 'approved', albo
+            nie ma przypisanej platformy.
+        olx.OlxError: Gdy publikacja na OLX sie nie powiedzie (brak
+            autoryzacji, naruszenie limitu OLX, blad API) - transakcja jest
+            wtedy w calosci wycofywana.
+    """
+    current = await _get_item_view(session, item_id)
+    if current.status != "approved":
+        raise IntakeValidationError(
+            f"Pozycja ma status '{current.status}' - publikowac mozna tylko "
+            "pozycje ze statusem 'approved'."
+        )
+    if current.platform_id is None:
+        raise IntakeValidationError("Nie mozna opublikowac pozycji bez platformy.")
+    # approve_item juz wymusil obecnosc tytulu i ceny; condition jest
+    # wymagane do zbudowania atrybutu stanu w payloadzie OLX.
+    if current.title is None or current.price_pln is None or current.condition is None:
+        raise IntakeValidationError(
+            "Nie mozna opublikowac pozycji bez tytulu, ceny albo stanu."
+        )
+
+    platform_row = (
+        await session.execute(
+            text(
+                "SELECT name, manufacturer::TEXT AS manufacturer, generation, "
+                "olx_attribute_value FROM platform WHERE id = :platform_id"
+            ),
+            {"platform_id": current.platform_id},
+        )
+    ).first()
+    if platform_row is None:
+        raise IntakeValidationError(
+            f"Platforma o id {current.platform_id} nie istnieje."
+        )
+    platform_name, manufacturer, generation, olx_attribute_value = platform_row
+    # Platforma "other" nie ma generation/olx_attribute_value w slowniku -
+    # platform_other (opis wpisany recznie przy zatwierdzaniu) jest wtedy
+    # jedynym sensownym opisem konsoli.
+    platform_generation = generation or current.platform_other or platform_name
+    console_name = current.platform_other or platform_name
+
+    try:
+        access_token = await olx.get_access_token(session)
+
+        settings = get_settings()
+        game_id = await _find_or_create_game(
+            session, current.title, current.platform_id
+        )
+
+        listing_id = (
+            await session.execute(
+                text(
+                    "INSERT INTO listing (game_id, condition, price_pln, status) "
+                    "VALUES (:game_id, CAST(:condition AS listing_condition), "
+                    ":price_pln, 'pending') RETURNING id"
+                ),
+                {
+                    "game_id": game_id,
+                    "condition": current.condition,
+                    "price_pln": current.price_pln,
+                },
+            )
+        ).scalar_one()
+
+        for position, url in enumerate(current.photo_urls, start=1):
+            await session.execute(
+                text(
+                    "INSERT INTO listing_photo "
+                    "(listing_id, position, public_url, is_primary) "
+                    "VALUES (:listing_id, :position, :url, :is_primary)"
+                ),
+                {
+                    "listing_id": listing_id,
+                    "position": position,
+                    "url": url,
+                    "is_primary": position == 1,
+                },
+            )
+
+        title = olx.build_title(current.title, platform_generation)
+        description = olx.build_description(
+            manufacturer=manufacturer,
+            console_name=console_name,
+            game_title=current.title,
+            condition=current.condition,
+        )
+        payload = olx.build_advert_payload(
+            title=title,
+            description=description,
+            category_id=settings.olx_category_id,
+            city_id=settings.olx_city_id,
+            price_pln=current.price_pln,
+            condition=current.condition,
+            platform_olx_attribute_value=olx_attribute_value,
+            image_urls=current.photo_urls,
+        )
+
+        advert = await olx.create_advert(
+            session, payload, access_token=access_token, listing_id=listing_id
+        )
+
+        await session.execute(
+            text(
+                "UPDATE listing SET olx_advert_id = :advert_id, "
+                "olx_status = :olx_status, "
+                "olx_payload = CAST(:payload AS jsonb), posted_at = now() "
+                "WHERE id = :listing_id"
+            ),
+            {
+                "advert_id": advert.get("id"),
+                "olx_status": advert.get("status"),
+                "payload": json.dumps(payload),
+                "listing_id": listing_id,
+            },
+        )
+        await session.execute(
+            text(
+                "UPDATE intake_item SET status = 'published', listing_id = :listing_id "
+                "WHERE id = :item_id"
+            ),
+            {"listing_id": listing_id, "item_id": item_id},
+        )
+    except Exception:
+        await session.rollback()
+        raise
+
+    await session.commit()
+    return await _get_item_view(session, item_id)
+
+
+async def list_platforms(session: AsyncSession) -> list[PlatformView]:
+    """Zwraca aktywne platformy ze slownika, do listy wyboru w formularzu.
+
+    Args:
+        session: Sesja bazy danych.
+
+    Returns:
+        Platformy posortowane wg producenta i nazwy.
+    """
+    rows = (
+        await session.execute(
+            text(
+                "SELECT id, code, name, manufacturer::TEXT AS manufacturer, "
+                "generation FROM platform WHERE is_active "
+                "ORDER BY manufacturer, name"
+            )
+        )
+    ).all()
+    return [PlatformView(**row._mapping) for row in rows]

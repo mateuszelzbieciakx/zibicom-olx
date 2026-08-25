@@ -43,6 +43,9 @@ services:
       - r2_access_key_id
       - r2_secret_access_key
       - gemini_api_key
+      - olx_client_id
+      - olx_client_secret
+      - token_encryption_key
     ports:
       - "8000:8000"
 
@@ -55,6 +58,12 @@ secrets:
     file: ./secrets/r2_secret_access_key.txt
   gemini_api_key:
     file: ./secrets/gemini_api_key.txt
+  olx_client_id:
+    file: ./secrets/olx_client_id.txt
+  olx_client_secret:
+    file: ./secrets/olx_client_secret.txt
+  token_encryption_key:
+    file: ./secrets/token_encryption_key.txt
 
 volumes:
   pgdata:

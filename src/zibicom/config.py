@@ -71,6 +71,21 @@ class Settings(BaseSettings):
         r2_secret_access_key: Sekretny klucz dostepowy R2 (sekret).
         gemini_api_key: Klucz API Gemini (sekret).
         gemini_model: Nazwa modelu Gemini uzywanego do rozpoznawania zdjec.
+        olx_client_id: Identyfikator aplikacji OLX Partner API (sekret).
+        olx_client_secret: Sekret aplikacji OLX Partner API (sekret).
+        olx_redirect_uri: Callback URI zarejestrowany w aplikacji OLX.
+            Bez dzialajacego endpointu (OLX nie akceptuje localhost) -
+            autoryzacja jest polreczna, patrz zibicom.olx.
+        olx_auth_base_url: Host, pod ktorym OLX obsluguje logowanie OAuth.
+        olx_api_base_url: Baza REST API OLX Partner (kategorie, miasta,
+            ogloszenia) oraz wymiana/odswiezenie tokenu.
+        olx_category_id: Domyslna kategoria OLX dla publikowanych ofert
+            (0 = nieustawiona, trzeba wybrac przez /api/olx/categories).
+        olx_city_id: Domyslne miasto OLX dla publikowanych ofert
+            (0 = nieustawione, trzeba wybrac przez /api/olx/cities).
+        token_encryption_key: Klucz Fernet do szyfrowania tokenow OLX w
+            bazie (sekret). Nie moze trafic do bazy - patrz
+            migrations/0004_olx_token.sql.
     """
 
     model_config = SettingsConfigDict(
@@ -113,6 +128,24 @@ class Settings(BaseSettings):
         default_factory=partial(_read_local_secret, "gemini_api_key")
     )
     gemini_model: str = "gemini-3.6-flash"
+
+    olx_client_id: SecretStr = Field(
+        default_factory=partial(_read_local_secret, "olx_client_id")
+    )
+    olx_client_secret: SecretStr = Field(
+        default_factory=partial(_read_local_secret, "olx_client_secret")
+    )
+    olx_redirect_uri: str = (
+        "https://pub-f139767f741440dcb875c293ca7116f0.r2.dev/callback"
+    )
+    olx_auth_base_url: str = "https://www.olx.pl"
+    olx_api_base_url: str = "https://www.olx.pl/api/partner"
+    olx_category_id: int = 0
+    olx_city_id: int = 0
+
+    token_encryption_key: SecretStr = Field(
+        default_factory=partial(_read_local_secret, "token_encryption_key")
+    )
 
     @computed_field  # type: ignore[prop-decorator]
     @property

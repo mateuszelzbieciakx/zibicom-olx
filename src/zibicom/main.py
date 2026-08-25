@@ -14,6 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from zibicom import __version__
 from zibicom.config import get_settings
 from zibicom.db import dispose_engine, get_session
+from zibicom.olx import dispose_http_client
+from zibicom.routers import router as intake_router
 
 
 class HealthResponse(BaseModel):
@@ -46,6 +48,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """
     yield
     await dispose_engine()
+    await dispose_http_client()
 
 
 app = FastAPI(
@@ -54,6 +57,8 @@ app = FastAPI(
     summary="Synchronizacja inwentarza sklepu z ogloszeniami OLX.",
     lifespan=lifespan,
 )
+
+app.include_router(intake_router)
 
 
 @app.get("/health", response_model=HealthResponse, tags=["monitoring"])

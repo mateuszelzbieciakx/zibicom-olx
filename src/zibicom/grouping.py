@@ -119,8 +119,12 @@ def _merge_group(photos: list[PhotoExtraction]) -> GroupedListing:
     Returns:
         Scalony opis egzemplarza wraz ze zbiorczym ostrzezeniem.
     """
-    title = next((p.title for p in photos if p.title), None)
-    price_pln = next((p.price_pln for p in photos if p.price_pln is not None), None)
+    title_source = next((p for p in photos if p.title), None)
+    title = title_source.title if title_source else None
+
+    price_source = next((p for p in photos if p.price_pln is not None), None)
+    price_pln = price_source.price_pln if price_source else None
+
     condition: Literal["new", "used"] = (
         "new" if any(p.condition == "new" for p in photos) else "used"
     )
@@ -136,14 +140,18 @@ def _merge_group(photos: list[PhotoExtraction]) -> GroupedListing:
         None,
     )
 
+    # Pewnosc bierzemy WYLACZNIE ze zdjecia, ktore faktycznie dostarczylo
+    # wartosc - zdjecie tylu pudelka nie widzi cenowki ani tytulu, wiec jego
+    # (z definicji niepewne) flagi nie moga obnizac pewnosci wartosci
+    # odczytanej z przodu.
     issues: list[str] = []
-    if title is None:
+    if title_source is None:
         issues.append("brak tytulu")
-    if price_pln is None:
-        issues.append("brak ceny")
-    if any(not p.title_confident for p in photos):
+    elif not title_source.title_confident:
         issues.append("niepewny tytul")
-    if any(not p.price_confident for p in photos):
+    if price_source is None:
+        issues.append("brak ceny")
+    elif not price_source.price_confident:
         issues.append("niepewna cena")
     warning = "; ".join(issues) if issues else None
 

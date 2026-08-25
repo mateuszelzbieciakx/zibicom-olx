@@ -3,8 +3,10 @@
 Narzędzie do synchronizacji inwentarza sklepu z grami wideo (zibicom)
 z ogłoszeniami na OLX.
 
-Stan: **szkielet projektu + schemat bazy**. Logika aplikacyjna (klient API OLX,
-import inwentarza, FIFO przy sprzedaży stacjonarnej) jeszcze nie istnieje.
+Stan: **schemat bazy + warstwa poczekalni (upload, rozpoznanie AI, ręczne
+zatwierdzanie) + integracja z OLX Partner API (autoryzacja, publikacja
+zatwierdzonych pozycji)**. FIFO przy sprzedaży stacjonarnej jeszcze nie
+istnieje.
 
 ## Stack
 
@@ -20,11 +22,22 @@ import inwentarza, FIFO przy sprzedaży stacjonarnej) jeszcze nie istnieje.
 ## Układ repozytorium
 
 ```
-migrations/            numerowane migracje SQL (0001_..., 0002_...)
+migrations/            numerowane migracje SQL (0001_..., 0002_..., 0003_..., 0004_...)
+postman/               kolekcja Postman do endpointów poczekalni
 src/zibicom/
   config.py            pydantic-settings: /run/secrets + .env
   db.py                silnik i sesje SQLAlchemy
-  main.py              FastAPI, /health
+  main.py              FastAPI, /health, podpięcie routerów
+  routers.py           endpointy HTTP warstwy poczekalni (intake) i OLX
+  intake.py            logika poczekalni: upload, rozpoznanie AI, zatwierdzanie,
+                        publikacja (promocja do game/listing/listing_photo)
+  photos.py            normalizacja zdjęć oraz upload/download/delete w R2
+  vision.py            rozpoznawanie egzemplarzy na zdjęciach przez Gemini
+  grouping.py          grupowanie rozpoznanych zdjęć w egzemplarze
+  models.py            modele Pydantic wyniku rozpoznania AI
+  crypto.py            szyfrowanie tokenów OLX kluczem Fernet
+  olx.py               integracja z OLX Partner API: autoryzacja (OAuth
+                        półręczny), odświeżanie tokenu, publikacja ogłoszeń
 tests/                 pytest, fixtures w conftest.py
 secrets/               pliki sekretów (ignorowane przez git)
 ```
@@ -77,7 +90,7 @@ się alfabetycznie **przy pierwszej inicjalizacji** wolumenu bazy. Kolejne pliki
 (`0002_...`) na istniejącej bazie trzeba puścić ręcznie:
 
 ```bash
-docker compose exec -T db psql -U zibicom -d zibicom < migrations/0002_....sql
+docker compose exec -T db psql -U zibicom -d zibicom -v ON_ERROR_STOP=1 < migrations/0004_olx_token.sql
 ```
 
 Wolumen danych montowany jest na `/var/lib/postgresql` — Postgres 18 zmienił
@@ -90,7 +103,15 @@ układ katalogów względem wcześniejszych wersji.
 - `listing` — jedna oferta OLX = jeden fizyczny egzemplarz.
 - `listing_photo` — zdjęcia oferty, unikalna pozycja w obrębie oferty.
 - `sale_event` — sprzedaż (kanał `in_store` albo `olx`).
-- `olx_operation` — audyt wywołań API OLX.
+- `olx_operation` — audyt wywołań API OLX (publikacja, wymiana/odświeżenie tokenu).
+- `olx_token` — singleton (id=1) z tokenami OAuth OLX, zaszyfrowanymi Fernetem
+  (`zibicom.crypto`) — klucz szyfrujący jest sekretem i nie trafia do bazy.
+- `intake_batch` / `intake_item` / `intake_photo` — poczekalnia (staging):
+  wynik rozpoznania AI jest niepewny (model myli ceny i czasem tytuły), więc
+  ląduje tu, a nie od razu w `game`/`listing` — dopóki człowiek nie zatwierdzi
+  pozycji. Publikacja (`POST /api/intake/items/{id}/publish`) promuje
+  zatwierdzoną pozycję do `game`/`listing`/`listing_photo` w jednej transakcji
+  i uzupełnia `intake_item.listing_id`.
 
 Konwencje: 3NF, soft delete (`is_active`), `created_at`/`updated_at` TIMESTAMPTZ,
 przy czym `updated_at` ustawia wspólny trigger `set_updated_at()` — kod
@@ -122,6 +143,29 @@ uv run pytest           # testy
 
 ## Endpointy
 
-| Metoda | Ścieżka   | Opis                                                |
-| ------ | --------- | --------------------------------------------------- |
-| GET    | `/health` | Stan aplikacji i bazy; 503 gdy baza nie odpowiada.   |
+| Metoda | Ścieżka                               | Opis                                                     |
+| ------ | -------------------------------------- | --------------------------------------------------------- |
+| GET    | `/health`                              | Stan aplikacji i bazy; 503 gdy baza nie odpowiada.         |
+| POST   | `/api/intake/batches`                  | Upload zdjęć (multipart) — tworzy nową partię poczekalni. |
+| POST   | `/api/intake/batches/{id}/extract`     | Rozpoznanie AI + grupowanie zdjęć w pozycje.               |
+| GET    | `/api/intake/batches/{id}/items`       | Lista pozycji partii do zatwierdzenia.                    |
+| PATCH  | `/api/intake/items/{id}`               | Ręczna korekta pól pozycji.                                |
+| POST   | `/api/intake/items/{id}/approve`       | Zatwierdzenie pozycji (wymaga tytułu i ceny).              |
+| POST   | `/api/intake/items/{id}/reject`        | Odrzucenie pozycji.                                        |
+| POST   | `/api/intake/items/{id}/publish`       | Publikacja POJEDYNCZEJ zatwierdzonej pozycji na OLX + promocja do game/listing. |
+| GET    | `/api/platforms`                       | Słownik platform do listy wyboru.                          |
+| GET    | `/api/olx/authorize`                   | URL logowania OAuth OLX do otwarcia w przeglądarce.        |
+| POST   | `/api/olx/exchange`                    | Wymiana kodu (`{"code": "..."}` przepisanego z paska adresu) na tokeny. |
+| GET    | `/api/olx/status`                      | Stan autoryzacji OLX: czy jest ważna, kiedy wygasa.        |
+| GET    | `/api/olx/categories?q=`               | Wyszukiwanie kategorii OLX (do ustalenia `olx_category_id`). |
+| GET    | `/api/olx/cities?q=`                   | Wyszukiwanie miast OLX (do ustalenia `olx_city_id`).       |
+
+Autoryzacja OLX jest **półręczna** — OLX nie akceptuje `localhost`, a
+zarejestrowany redirect URI (adres w R2) nie ma działającego endpointu.
+Trzeba więc: otworzyć URL z `/api/olx/authorize`, zalogować się, przepisać
+parametr `code` z paska adresu po przekierowaniu i przesłać go przez
+`/api/olx/exchange`. Publikacja partii hurtem świadomie nie istnieje na tym
+etapie — `/api/intake/items/{id}/publish` publikuje jedną pozycję na raz.
+
+Kolekcja Postman z endpointami poczekalni, w kolejności workflow, jest
+w `postman/zibicom-olx.postman_collection.json`.

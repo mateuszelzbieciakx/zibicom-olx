@@ -9,15 +9,23 @@ zatwierdzania ofert.
 
 from __future__ import annotations
 
+import io
 import logging
+import time
+from functools import lru_cache
 
 from google import genai
-from google.genai import types
+from google.genai import errors, types
+from PIL import Image
 
 from zibicom.config import get_settings
 from zibicom.models import PhotoExtraction, PlatformCode
 
 logger = logging.getLogger(__name__)
+
+RETRY_ATTEMPTS = 3
+RETRY_DELAY_SECONDS = 10.0
+GEMINI_FREE_TIER_DAILY_LIMIT = 20
 
 PROMPT = """\
 Jestes ekspertem od gier wideo. Na zdjeciu jest jeden fizyczny egzemplarz
@@ -74,14 +82,35 @@ Pozostaw null, jesli wszystko jest jasne.
 """
 
 
+@lru_cache
 def _client() -> genai.Client:
-    """Buduje klienta Gemini na podstawie konfiguracji aplikacji.
+    """Buduje (raz na proces) klienta Gemini na podstawie konfiguracji aplikacji.
+
+    Klient google-genai trzyma pod spodem wspoldzielony transport httpx.
+    Tworzenie nowej instancji przy kazdym wywolaniu prowadzi do sytuacji, w
+    ktorej GC zbiera porzucona instancje i zamyka jej transport - kolejne
+    zadania (np. rozpoznawanie kolejnych zdjec partii w tym samym procesie)
+    trafiaja wtedy na zamkniete polaczenie ("Cannot send a request, as the
+    client has been closed"). `lru_cache` bez argumentow trzyma jedna,
+    wspoldzielona instancje przez caly czas zycia procesu - klient
+    google-genai jest bezpieczny do wielokrotnego uzycia.
 
     Returns:
         Klient google-genai uwierzytelniony kluczem API z ustawien.
     """
     settings = get_settings()
     return genai.Client(api_key=settings.gemini_api_key.get_secret_value())
+
+
+class GeminiQuotaExceededError(Exception):
+    """Wyczerpany dzienny limit darmowego tieru Gemini API.
+
+    W przeciwienstwie do przejsciowych bledow sieciowych, ponawianie proby
+    nic tu nie da - limit odnawia sie raz na dobe. Dlatego ten wyjatek NIE
+    jest wewnetrznie tlumiony (w odroznieniu od reszty bledow API) i
+    propaguje sie az do wywolujacego, przerywajac analize calej partii,
+    zamiast bic sie o limit przy kazdym kolejnym zdjeciu.
+    """
 
 
 def _failure_result(note: str) -> PhotoExtraction:
@@ -110,6 +139,63 @@ def _failure_result(note: str) -> PhotoExtraction:
     )
 
 
+def _generate_content(image: Image.Image, model: str) -> types.GenerateContentResponse:
+    """Woli Gemini o rozpoznanie zdjecia, ponawiajac przejsciowe bledy.
+
+    Klientowski blad 429 (limit) NIE jest traktowany jako przejsciowy -
+    czekanie nic tu nie da (limit odnawia sie raz na dobe), wiec leci od
+    razu, bez zuzywania prob. Inne bledy klienta (4xx - np. zle zadanie)
+    tez nie sa ponawiane z tego samego powodu: sa deterministyczne, kolejna
+    proba zwroci to samo. Ponawiane sa wylacznie bledy przejsciowe (blad
+    serwera, przerwane polaczenie itp.) - do `RETRY_ATTEMPTS` prob,
+    z `RETRY_DELAY_SECONDS` przerwy miedzy nimi.
+
+    Args:
+        image: Znormalizowane zdjecie do rozpoznania.
+        model: Nazwa modelu Gemini z konfiguracji.
+
+    Returns:
+        Surowa odpowiedz Gemini.
+
+    Raises:
+        GeminiQuotaExceededError: Gdy API zwrocilo 429 (dzienny limit).
+        errors.ClientError: Gdy API zwrocilo inny blad 4xx (nie ponawiane).
+        Exception: Ostatni napotkany blad, gdy wszystkie proby zawiodly.
+    """
+    last_exc: Exception
+    for attempt in range(1, RETRY_ATTEMPTS + 1):
+        try:
+            return _client().models.generate_content(
+                model=model,
+                contents=[PROMPT, image],
+                config=types.GenerateContentConfig(
+                    temperature=0,
+                    response_mime_type="application/json",
+                    response_schema=PhotoExtraction,
+                ),
+            )
+        except errors.ClientError as exc:
+            if exc.code == 429:
+                raise GeminiQuotaExceededError(
+                    "Wyczerpano dzienny limit darmowego tieru Gemini "
+                    f"({GEMINI_FREE_TIER_DAILY_LIMIT} zdjec/dobe). Wlacz platny "
+                    "tier w Google Cloud, zeby kontynuowac rozpoznawanie."
+                ) from exc
+            raise
+        except Exception as exc:  # retry na kazdym innym (przejsciowym) bledzie
+            last_exc = exc
+            logger.warning(
+                "Wywolanie Gemini nie powiodlo sie (proba %d/%d): %s",
+                attempt,
+                RETRY_ATTEMPTS,
+                exc,
+            )
+            if attempt < RETRY_ATTEMPTS:
+                time.sleep(RETRY_DELAY_SECONDS)
+
+    raise last_exc
+
+
 def recognize_photo(image_bytes: bytes) -> PhotoExtraction:
     """Rozpoznaje jedno znormalizowane zdjecie JPEG przez Gemini.
 
@@ -118,25 +204,24 @@ def recognize_photo(image_bytes: bytes) -> PhotoExtraction:
             `zibicom.photos.normalize_photo`).
 
     Returns:
-        Wynik rozpoznania. Gdy wywolanie API sie nie powiedzie albo zwroci
-        odpowiedz niezgodna ze schematem, zwracany jest bezpieczny wynik
-        z flagami pewnosci ustawionymi na false i notatka opisujaca blad -
-        funkcja nigdy nie rzuca wyjatkiem.
+        Wynik rozpoznania. Gdy wywolanie API sie nie powiedzie (po
+        wyczerpaniu prob) albo zwroci odpowiedz niezgodna ze schematem,
+        zwracany jest bezpieczny wynik z flagami pewnosci ustawionymi na
+        false i notatka opisujaca blad.
+
+    Raises:
+        GeminiQuotaExceededError: Gdy wyczerpano dzienny limit darmowego
+            tieru Gemini - w odroznieniu od innych bledow, TEN wyjatek
+            propaguje sie az do wywolujacego, zeby przerwac analize calej
+            partii zamiast zderzac sie z limitem przy kazdym zdjeciu.
     """
     settings = get_settings()
+    image = Image.open(io.BytesIO(image_bytes))
+
     try:
-        response = _client().models.generate_content(
-            model=settings.gemini_model,
-            contents=[
-                types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
-                PROMPT,
-            ],
-            config=types.GenerateContentConfig(
-                temperature=0,
-                response_mime_type="application/json",
-                response_schema=PhotoExtraction,
-            ),
-        )
+        response = _generate_content(image, settings.gemini_model)
+    except GeminiQuotaExceededError:
+        raise
     except Exception:
         logger.exception("Wywolanie Gemini nie powiodlo sie.")
         return _failure_result(

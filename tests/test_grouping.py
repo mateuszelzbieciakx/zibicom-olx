@@ -76,6 +76,64 @@ def test_niepewny_tytul_generuje_ostrzezenie() -> None:
     assert "tytul" in listings[0].warning
 
 
+def test_zdjecie_bez_ceny_nie_obniza_pewnosci_ceny_z_przodu() -> None:
+    # Tyl pudelka nie widzi cenowki - jego (z definicji niepewna) flaga nie
+    # moze zepsuc pewnosci ceny odczytanej z przodu.
+    photos = [
+        _photo(is_front=True, price_pln=Decimal("120"), price_confident=True),
+        _photo(is_front=False, title=None, price_pln=None, price_confident=False),
+    ]
+
+    listings = group_photos(photos)
+
+    assert listings[0].warning is None
+
+
+def test_niepewna_cena_ze_zrodlowego_zdjecia_generuje_ostrzezenie() -> None:
+    photos = [
+        _photo(is_front=True, price_pln=Decimal("120"), price_confident=False),
+        _photo(is_front=False, title=None, price_pln=None, price_confident=True),
+    ]
+
+    listings = group_photos(photos)
+
+    assert listings[0].warning is not None
+    assert "cen" in listings[0].warning
+
+
+def test_zdjecie_bez_tytulu_nie_obniza_pewnosci_tytulu_z_przodu() -> None:
+    photos = [
+        _photo(
+            is_front=True,
+            title="God of War",
+            title_confident=True,
+            price_pln=Decimal("100"),
+        ),
+        _photo(is_front=False, title=None, title_confident=False),
+    ]
+
+    listings = group_photos(photos)
+
+    assert listings[0].warning is None
+
+
+def test_niepewny_tytul_ze_zrodlowego_zdjecia_generuje_ostrzezenie() -> None:
+    photos = [
+        _photo(
+            is_front=True,
+            title="God of War",
+            title_confident=False,
+            price_pln=Decimal("100"),
+        ),
+        _photo(is_front=False, title=None, title_confident=True),
+    ]
+
+    listings = group_photos(photos)
+
+    assert listings[0].warning is not None
+    assert "tytul" in listings[0].warning
+
+
 def test_brak_ostrzezenia_gdy_wszystko_pewne() -> None:
     listings = group_photos([_photo(is_front=True, price_pln=Decimal("100"))])
 

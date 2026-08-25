@@ -9,19 +9,22 @@ dependencies = [
     "uvicorn[standard]>=0.35",
     "sqlalchemy>=2.0.36",
     "psycopg[binary,pool]>=3.2.9",
+    "greenlet>=3.1",
     "pydantic>=2.11",
     "pydantic-settings>=2.7",
     "boto3>=1.43.79",
     "pillow>=12.3.0",
     "pillow-heif>=1.5.0",
     "google-genai>=2.19.0",
+    "python-multipart>=0.0.20",
+    "httpx>=0.28.1",
+    "cryptography>=50.0.0",
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.25",
-    "httpx>=0.28",
     "ruff>=0.12",
 ]
 

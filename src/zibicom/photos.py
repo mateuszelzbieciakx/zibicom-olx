@@ -105,6 +105,36 @@ def upload_photo(jpeg_bytes: bytes) -> str:
     return f"{settings.r2_public_base_url}/{key}"
 
 
+def download_photo(public_url: str) -> bytes:
+    """Pobiera zawartosc zdjecia z R2 na podstawie jego publicznego URL-a.
+
+    Uzywane w kroku rozpoznawania AI (`zibicom.intake.extract_batch`) -
+    zdjecia partii istnieja tylko jako obiekty w R2, wiec trzeba je stamtad
+    sciagnac przed przekazaniem do Gemini.
+
+    Args:
+        public_url: Publiczny URL zdjecia zwrocony wczesniej przez
+            `upload_photo`.
+
+    Returns:
+        Bajty zdjecia.
+
+    Raises:
+        ValueError: Gdy URL nie nalezy do skonfigurowanego publicznego
+            bucketu R2 (np. literowka albo dane z innego srodowiska).
+    """
+    settings = get_settings()
+    prefix = f"{settings.r2_public_base_url}/"
+    if not public_url.startswith(prefix):
+        raise ValueError(
+            f"URL nie pochodzi ze skonfigurowanego bucketu R2: {public_url!r}"
+        )
+
+    key = public_url.removeprefix(prefix)
+    response = _r2_client().get_object(Bucket=settings.r2_bucket, Key=key)
+    return response["Body"].read()
+
+
 def delete_photo(public_url: str) -> None:
     """Kasuje zdjecie z R2 na podstawie jego publicznego URL-a.
 
