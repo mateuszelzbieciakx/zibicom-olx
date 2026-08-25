@@ -99,9 +99,28 @@ class OlxStatus(BaseModel):
     scope: str | None
 
 
+# Domyslny User-Agent httpx ("python-httpx/...") jest przez CloudFront/WAF
+# OLX traktowany jako ruch botowy i blokowany 403-ka z pustym cialem - bez
+# wzgledu na poprawnosc autoryzacji. Potwierdzone eksperymentalnie: to samo
+# zadanie z wlasnym User-Agentem dostaje 200. Naglowki musza wiec byc
+# ustawione na kliencie (dla WSZYSTKICH wywolan OLX), nie doklejane per-request.
+_DEFAULT_HEADERS = {
+    "User-Agent": "zibicom-olx/0.1",
+    "Accept": "application/json",
+    "Content-Type": "application/json",
+}
+
+# Partner API (kategorie/miasta/adverts) odrzuca zadania bez naglowka
+# Version 400-ka "Missing required 'Version' header!". Endpoint OAuth
+# (/api/open/oauth/token) NIE jest czescia Partner API i dziala poprawnie
+# BEZ tego naglowka - stad osobny klient zamiast dopisania Version do
+# _DEFAULT_HEADERS, zeby nie ryzykowac zepsucia dzialajacego juz OAuth.
+_PARTNER_HEADERS = {**_DEFAULT_HEADERS, "Version": "2.0"}
+
+
 @lru_cache
 def _http_client() -> httpx.AsyncClient:
-    """Buduje (raz na proces) asynchronicznego klienta HTTP do OLX API.
+    """Buduje (raz na proces) klienta HTTP do endpointu OAuth OLX.
 
     Tworzenie nowego klienta przy kazdym wywolaniu prowadzi do tego samego
     bledu, co przy kliencie Gemini (zibicom.vision._client) - GC zamyka
@@ -110,17 +129,62 @@ def _http_client() -> httpx.AsyncClient:
     argumentow trzyma jedna, wspoldzielona instancje przez caly czas zycia
     procesu.
 
+    Uzywany WYLACZNIE przez `_token_request` (/api/open/oauth/token) - do
+    Partner API sluzy `_partner_http_client` (inne wymagane naglowki).
+
     Returns:
-        Asynchroniczny klient httpx z rozsadnym timeoutem.
+        Asynchroniczny klient httpx z rozsadnym timeoutem i naglowkami
+        (`_DEFAULT_HEADERS`) omijajacymi blokade WAF/CloudFront OLX.
     """
-    return httpx.AsyncClient(timeout=30.0)
+    return httpx.AsyncClient(timeout=30.0, headers=_DEFAULT_HEADERS)
+
+
+@lru_cache
+def _partner_http_client() -> httpx.AsyncClient:
+    """Buduje (raz na proces) klienta HTTP do Partner API OLX.
+
+    Jak `_http_client` (jeden wspoldzielony klient na caly proces, zeby
+    uniknac "client has been closed"), ale z dodatkowym naglowkiem Version
+    wymaganym WYLACZNIE przez Partner API (kategorie/miasta/adverts) - patrz
+    komentarz przy `_PARTNER_HEADERS`.
+
+    Returns:
+        Asynchroniczny klient httpx z rozsadnym timeoutem i naglowkami
+        `_PARTNER_HEADERS`.
+    """
+    return httpx.AsyncClient(timeout=30.0, headers=_PARTNER_HEADERS)
 
 
 async def dispose_http_client() -> None:
-    """Zamyka wspoldzielonego klienta HTTP (wywolywane przy zamykaniu aplikacji)."""
+    """Zamyka wspoldzielone klienty HTTP (wywolywane przy zamykaniu aplikacji)."""
     if _http_client.cache_info().currsize:
         await _http_client().aclose()
     _http_client.cache_clear()
+    if _partner_http_client.cache_info().currsize:
+        await _partner_http_client().aclose()
+    _partner_http_client.cache_clear()
+
+
+def _error_detail(response: httpx.Response) -> str:
+    """Wydobywa czytelny szczegol bledu z odpowiedzi OLX (do logu i wyjatku).
+
+    Uzywa `response.text` (nie sparsowanego JSON-a) - odpowiedzi blokady
+    WAF/CloudFront (patrz `_DEFAULT_HEADERS`) czesto nie sa poprawnym JSON-em
+    albo sa calkowicie puste, wiec poleganie na `response.json()` gubilo
+    tresc bledu i zostawialo tylko "None" w logu, co uniemozliwialo
+    diagnoze.
+
+    Args:
+        response: Surowa odpowiedz httpx zakonczona bledem.
+
+    Returns:
+        Tekst odpowiedzi przyciety do 500 znakow, albo jawny opis pustej
+        odpowiedzi, gdy `response.text` jest puste/samymi bialymi znakami.
+    """
+    body_text = response.text
+    if not body_text.strip():
+        return "pusta odpowiedz — prawdopodobnie blokada WAF/CloudFront"
+    return body_text[:500]
 
 
 def _redact(payload: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -242,6 +306,7 @@ async def _token_request(
         body = None
 
     succeeded = response.status_code < 400 and isinstance(body, dict)
+    error_detail = None if succeeded else _error_detail(response)
     await _log_operation(
         session,
         listing_id=None,
@@ -250,12 +315,12 @@ async def _token_request(
         response_payload=_redact(body) if isinstance(body, dict) else None,
         http_status=response.status_code,
         succeeded=succeeded,
-        olx_error=None if succeeded else str(body),
+        olx_error=error_detail,
     )
 
     if not succeeded:
         raise OlxApiError(
-            f"OLX zwrocilo blad {response.status_code} przy {operation}: {body}"
+            f"OLX zwrocilo blad {response.status_code} przy {operation}: {error_detail}"
         )
     return body
 
@@ -435,10 +500,33 @@ async def get_status(session: AsyncSession) -> OlxStatus:
     )
 
 
+def _unwrap_data(body: object) -> object:
+    """Rozpakuje klucz "data", w ktory Partner API OLX opakowuje kazda odpowiedz.
+
+    Partner API zwraca np. `{"data": [...]}` dla list (kategorie/miasta) i
+    `{"data": {...}}` dla pojedynczego obiektu (utworzone ogloszenie) - bez
+    tego rozpakowania parser dostaje wrapper zamiast oczekiwanego ksztaltu i
+    odrzuca poprawna odpowiedz jako "nieoczekiwana odpowiedz (200)". Jedna
+    funkcja uzywana przez wszystkie wywolania Partner API
+    (`_parse_list_response`, `create_advert`), zeby nie powtarzac tej samej
+    logiki (i tej samej pomylki) w kazdym miejscu z osobna.
+
+    Args:
+        body: Sparsowane JSON cialo odpowiedzi, albo None.
+
+    Returns:
+        `body["data"]`, gdy `body` jest dict-em z kluczem "data"; w
+        przeciwnym razie `body` bez zmian.
+    """
+    if isinstance(body, dict) and "data" in body:
+        return body["data"]
+    return body
+
+
 def _parse_list_response(
     response: httpx.Response, *, operation: str
 ) -> list[dict[str, Any]]:
-    """Parsuje odpowiedz JSON, ktora ma byc tablica obiektow.
+    """Parsuje odpowiedz JSON, ktora ma byc (po rozpakowaniu "data") tablica obiektow.
 
     Args:
         response: Surowa odpowiedz httpx.
@@ -448,48 +536,182 @@ def _parse_list_response(
         Sparsowana lista obiektow.
 
     Raises:
-        OlxApiError: Gdy status jest bledem albo cialo nie jest tablica.
+        OlxApiError: Gdy status jest bledem albo cialo (po rozpakowaniu) nie
+            jest tablica.
     """
     try:
         body = response.json()
     except ValueError:
         body = None
-    if response.status_code >= 400 or not isinstance(body, list):
+    data = _unwrap_data(body)
+    if response.status_code >= 400 or not isinstance(data, list):
         raise OlxApiError(
             f"OLX zwrocilo nieoczekiwana odpowiedz przy {operation} "
             f"({response.status_code}): {body!r}"
         )
-    return body
+    return data
+
+
+# Pola kategorii istotne dla klienta (do wyboru category_id i ustalenia,
+# czy mozna w niej wystawic ogloszenie) - OLX zwraca wiecej pol niz to,
+# odrzucane przez `_compact_category`.
+_CATEGORY_FIELDS = ("id", "name", "parent_id", "is_leaf", "photos_limit")
+
+# Zabezpieczenie `_collect_leaf_matches` przed nieskonczona rekurencja, gdyby
+# OLX kiedys zwrocilo cykliczne/zle dane parent_id. NIE chroni przed limitem
+# OLX (4500 zadan/5 min) - to robi cache w `_category_tree_cache`, bo
+# rekurencja i tak dziala na juz pobranym, cache'owanym drzewie i nie
+# wykonuje przy tym zadnych dodatkowych wywolan OLX.
+_MAX_CATEGORY_SEARCH_DEPTH = 20
+
+# Cache calego (plaskiego) drzewa kategorii OLX w pamieci procesu - patrz
+# `_fetch_category_tree`. Zwykla zmienna modulu (nie `@lru_cache`), bo
+# wypelniana jest wewnatrz funkcji async po udanym wywolaniu, nie przy samym
+# wejsciu do niej.
+_category_tree_cache: list[dict[str, Any]] | None = None
+
+
+def _compact_category(raw: dict[str, Any]) -> dict[str, Any]:
+    """Redukuje surowy rekord kategorii OLX do pol istotnych dla klienta.
+
+    Args:
+        raw: Surowy rekord kategorii z odpowiedzi OLX.
+
+    Returns:
+        Slownik z wylacznie kluczami `_CATEGORY_FIELDS`.
+    """
+    return {field: raw.get(field) for field in _CATEGORY_FIELDS}
+
+
+async def _fetch_category_tree(session: AsyncSession) -> list[dict[str, Any]]:
+    """Pobiera (i cache'uje w pamieci procesu) cale plaskie drzewo kategorii OLX.
+
+    OLX zwraca CALE drzewo kategorii jednym wywolaniem GET /categories -
+    kazdy rekord ma id/name/parent_id/is_leaf/photos_limit, kategorie glowne
+    maja parent_id=0, a wystawic ogloszenie mozna TYLKO w kategorii z
+    is_leaf=true. Drzewo zmienia sie rzadko, a limit OLX to 4500 zadan/5 min,
+    wiec wynik pierwszego wywolania jest trzymany w `_category_tree_cache` i
+    ponownie uzywany przez kazde kolejne zejscie w glab
+    (`fetch_categories`) i wyszukiwanie (`search_leaf_categories`) w tym
+    samym procesie - zamiast odpytywac OLX za kazdym razem.
+
+    Args:
+        session: Sesja bazy danych (do zdobycia access tokenu przy
+            pierwszym, niecache'owanym wywolaniu).
+
+    Returns:
+        Plaska lista kategorii w zwiezlym ksztalcie (`_compact_category`).
+
+    Raises:
+        OlxAuthError: Gdy brak waznej autoryzacji OLX (tylko przy pierwszym,
+            niecache'owanym wywolaniu).
+        OlxApiError: Gdy wywolanie OLX sie nie powiedzie (tylko przy
+            pierwszym, niecache'owanym wywolaniu).
+    """
+    global _category_tree_cache
+    if _category_tree_cache is not None:
+        return _category_tree_cache
+
+    token = await get_access_token(session)
+    settings = get_settings()
+    response = await _partner_http_client().get(
+        f"{settings.olx_api_base_url}{_CATEGORIES_PATH}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    raw = _parse_list_response(response, operation="fetch_categories")
+    _category_tree_cache = [_compact_category(c) for c in raw]
+    return _category_tree_cache
 
 
 async def fetch_categories(
-    session: AsyncSession, q: str | None = None
+    session: AsyncSession, *, parent_id: int | None = None, q: str | None = None
 ) -> list[dict[str, Any]]:
-    """Wyszukuje kategorie OLX po nazwie - pomocnicze, do ustalenia category_id.
+    """Zwraca kategorie OLX na jednym poziomie drzewa (dzieci `parent_id`).
 
     Args:
         session: Sesja bazy danych.
-        q: Fragment nazwy do wyszukania (case-insensitive), albo None dla
-            pelnej listy.
+        parent_id: Id kategorii-rodzica, ktorej dzieci zwrocic; None dla
+            kategorii glownych (parent_id=0 w danych OLX).
+        q: Fragment nazwy do dodatkowego filtrowania (case-insensitive) w
+            obrebie zwracanego poziomu - OLX ignoruje wyszukiwanie tekstowe
+            w zadaniu, wiec filtrowanie robimy lokalnie na pobranej (i
+            cache'owanej - patrz `_fetch_category_tree`) liscie.
 
     Returns:
-        Kategorie pasujace do `q` (albo wszystkie, gdy `q` jest puste).
+        Kategorie bedace dziecmi `parent_id` (albo glowne, gdy `parent_id`
+        jest None), ewentualnie dalej zawezone przez `q`.
 
     Raises:
         OlxAuthError: Gdy brak waznej autoryzacji OLX.
         OlxApiError: Gdy wywolanie OLX sie nie powiedzie.
     """
-    token = await get_access_token(session)
-    settings = get_settings()
-    response = await _http_client().get(
-        f"{settings.olx_api_base_url}{_CATEGORIES_PATH}",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-    categories = _parse_list_response(response, operation="fetch_categories")
+    tree = await _fetch_category_tree(session)
+    effective_parent = 0 if parent_id is None else parent_id
+    level = [c for c in tree if c.get("parent_id") == effective_parent]
     if not q:
-        return categories
+        return level
     needle = q.strip().lower()
-    return [c for c in categories if needle in str(c.get("name", "")).lower()]
+    return [c for c in level if needle in str(c.get("name", "")).lower()]
+
+
+def _collect_leaf_matches(
+    tree_by_parent: dict[int, list[dict[str, Any]]],
+    parent_id: int,
+    needle: str,
+    depth: int,
+) -> list[dict[str, Any]]:
+    """Rekurencyjnie zbiera liscie (is_leaf=true) pasujace do `needle` w poddrzewie.
+
+    Args:
+        tree_by_parent: Kategorie zgrupowane po `parent_id`.
+        parent_id: Korzen poddrzewa do przeszukania.
+        needle: Znormalizowany (lowercase, przyciety) fragment nazwy.
+        depth: Biezaca glebokosc rekurencji - patrz `_MAX_CATEGORY_SEARCH_DEPTH`.
+
+    Returns:
+        Kategorie-liscie z poddrzewa `parent_id`, ktorych nazwa zawiera
+        `needle`.
+    """
+    if depth > _MAX_CATEGORY_SEARCH_DEPTH:
+        return []
+    matches: list[dict[str, Any]] = []
+    for child in tree_by_parent.get(parent_id, []):
+        if child.get("is_leaf"):
+            if needle in str(child.get("name", "")).lower():
+                matches.append(child)
+        else:
+            matches.extend(
+                _collect_leaf_matches(tree_by_parent, child["id"], needle, depth + 1)
+            )
+    return matches
+
+
+async def search_leaf_categories(session: AsyncSession, q: str) -> list[dict[str, Any]]:
+    """Rekurencyjnie przeszukuje cale drzewo kategorii OLX pod katem lisci.
+
+    Pozwala znalezc docelowa kategorie (np. "Gry i konsole") bez recznego
+    klikania po drzewie poziom po poziomie - tylko liscie (is_leaf=true) sa
+    zwracane, bo tylko w nich mozna wystawic ogloszenie. Dziala na
+    cache'owanym drzewie (`_fetch_category_tree`) - realne wywolanie OLX
+    padnie WYLACZNIE przy pierwszym uzyciu w danym procesie.
+
+    Args:
+        session: Sesja bazy danych.
+        q: Fragment nazwy do wyszukania (case-insensitive).
+
+    Returns:
+        Kategorie-liscie, ktorych nazwa zawiera `q`.
+
+    Raises:
+        OlxAuthError: Gdy brak waznej autoryzacji OLX.
+        OlxApiError: Gdy wywolanie OLX sie nie powiedzie.
+    """
+    tree = await _fetch_category_tree(session)
+    by_parent: dict[int, list[dict[str, Any]]] = {}
+    for category in tree:
+        by_parent.setdefault(category.get("parent_id", 0), []).append(category)
+    needle = q.strip().lower()
+    return _collect_leaf_matches(by_parent, 0, needle, depth=0)
 
 
 async def fetch_cities(
@@ -511,7 +733,7 @@ async def fetch_cities(
     """
     token = await get_access_token(session)
     settings = get_settings()
-    response = await _http_client().get(
+    response = await _partner_http_client().get(
         f"{settings.olx_api_base_url}{_CITIES_PATH}",
         headers={"Authorization": f"Bearer {token}"},
     )
@@ -697,7 +919,7 @@ async def create_advert(
     request_log = _redact(payload)
 
     try:
-        response = await _http_client().post(
+        response = await _partner_http_client().post(
             f"{settings.olx_api_base_url}{_ADVERTS_PATH}",
             json=payload,
             headers={"Authorization": f"Bearer {access_token}"},
@@ -721,22 +943,24 @@ async def create_advert(
         body = response.json()
     except ValueError:
         body = None
+    data = _unwrap_data(body)
 
-    succeeded = response.status_code < 400 and isinstance(body, dict)
+    succeeded = response.status_code < 400 and isinstance(data, dict)
+    error_detail = None if succeeded else _error_detail(response)
     await _log_operation(
         session,
         listing_id=listing_id,
         operation="create_advert",
         request_payload=request_log,
-        response_payload=body if isinstance(body, dict) else None,
+        response_payload=data if isinstance(data, dict) else None,
         http_status=response.status_code,
         succeeded=succeeded,
-        olx_error=None if succeeded else str(body),
+        olx_error=error_detail,
     )
 
     if not succeeded:
         raise OlxApiError(
             f"OLX zwrocilo blad {response.status_code} przy tworzeniu "
-            f"ogloszenia: {body}"
+            f"ogloszenia: {error_detail}"
         )
-    return body
+    return data

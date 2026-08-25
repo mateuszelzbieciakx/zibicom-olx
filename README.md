@@ -141,6 +141,43 @@ uv run ruff format .    # formatowanie
 uv run pytest           # testy
 ```
 
+### Testy i baza testowa
+
+Testy (`tests/test_olx.py`, `tests/test_intake.py`) łączą się z **prawdziwym**
+Postgresem z `docker-compose` — enumy, CHECK-i i kaskady FK w migracjach nie
+są mockowane. Fixture `db_session` (`tests/conftest.py`) czyści dane
+(`DELETE FROM ...`) po **każdym** teście, żeby kolejny test startował
+z czystym stanem.
+
+To czyszczenie **musi** działać na osobnej bazie, nigdy na tej, z której
+korzysta aplikacja — inaczej `pytest` kasowałby autoryzację OLX
+(`olx_token`) i docelowo inwentarz sklepu (`game`/`listing`) przy każdym
+uruchomieniu. Dlatego testy zawsze łączą się z bazą, której nazwa kończy się
+na `_test`:
+
+- domyślnie jest to `zibicom_test` (ta sama instancja Postgresa
+  z `docker-compose`, osobna baza w tym samym klastrze);
+- nazwę można nadpisać zmienną środowiskową `TEST_POSTGRES_DB` — pod
+  warunkiem, że i tak kończy się na `_test`.
+
+To druga część zabezpieczenia jest **twardą blokadą, nie konwencją**:
+`tests/conftest.py` odmawia uruchomienia testów, jeśli skonfigurowana nazwa
+nie kończy się na `_test` (np. pomyłkowe `TEST_POSTGRES_DB=zibicom`), i
+dodatkowo sprawdza `SELECT current_database()` tuż przed każdym `DELETE`
+w ramach `db_session` — więc nawet błąd w samym kodzie fixture nie
+wystarczy, żeby dotknąć bazy aplikacji.
+
+Baza testowa jest tworzona automatycznie (jeśli jeszcze nie istnieje)
+i migrowana od zera przy pierwszym uruchomieniu `pytest` w danym klastrze
+Postgres — nie trzeba nic robić ręcznie poza `docker compose up -d db`.
+Migracje **nie są idempotentne** (pisane do jednorazowego wykonania przez
+`docker-entrypoint-initdb.d`), więc po dodaniu nowej migracji do
+`migrations/` trzeba usunąć bazę testową, żeby została zmigrowana od nowa:
+
+```bash
+docker compose exec db psql -U zibicom -d postgres -c 'DROP DATABASE zibicom_test'
+```
+
 ## Endpointy
 
 | Metoda | Ścieżka                               | Opis                                                     |
@@ -157,7 +194,8 @@ uv run pytest           # testy
 | GET    | `/api/olx/authorize`                   | URL logowania OAuth OLX do otwarcia w przeglądarce.        |
 | POST   | `/api/olx/exchange`                    | Wymiana kodu (`{"code": "..."}` przepisanego z paska adresu) na tokeny. |
 | GET    | `/api/olx/status`                      | Stan autoryzacji OLX: czy jest ważna, kiedy wygasa.        |
-| GET    | `/api/olx/categories?q=`               | Wyszukiwanie kategorii OLX (do ustalenia `olx_category_id`). |
+| GET    | `/api/olx/categories?parent_id=&q=`    | Kategorie OLX na jednym poziomie drzewa (dzieci `parent_id`, domyślnie kategorie główne); `q` filtruje po nazwie w obrębie poziomu. |
+| GET    | `/api/olx/categories/search?q=`        | Rekurencyjne wyszukiwanie kategorii-liści (`is_leaf=true`) w całym drzewie — jedyne, w których można wystawić ogłoszenie. |
 | GET    | `/api/olx/cities?q=`                   | Wyszukiwanie miast OLX (do ustalenia `olx_city_id`).       |
 
 Autoryzacja OLX jest **półręczna** — OLX nie akceptuje `localhost`, a

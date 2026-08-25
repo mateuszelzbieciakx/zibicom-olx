@@ -54,6 +54,24 @@ class OlxAuthorizeResponse(BaseModel):
     url: str
 
 
+class OlxCategoryView(BaseModel):
+    """Zwiezly ksztalt kategorii OLX zwracany przez /api/olx/categories*.
+
+    Attributes:
+        id: Id kategorii OLX.
+        name: Nazwa kategorii.
+        parent_id: Id kategorii-rodzica (0 dla kategorii glownych).
+        is_leaf: Czy w tej kategorii mozna wystawic ogloszenie (brak dzieci).
+        photos_limit: Maksymalna liczba zdjec dozwolona w tej kategorii.
+    """
+
+    id: int
+    name: str
+    parent_id: int
+    is_leaf: bool
+    photos_limit: int | None
+
+
 class OlxExchangeRequest(BaseModel):
     """Kod autoryzacyjny przepisany recznie z paska adresu po przekierowaniu OLX.
 
@@ -230,15 +248,37 @@ async def olx_status(session: SessionDep) -> olx.OlxStatus:
 
 @router.get(
     "/api/olx/categories",
-    response_model=list[dict[str, Any]],
+    response_model=list[OlxCategoryView],
     tags=["olx"],
 )
 async def olx_categories(
-    session: SessionDep, q: str | None = None
+    session: SessionDep, parent_id: int | None = None, q: str | None = None
 ) -> list[dict[str, Any]]:
-    """Wyszukuje kategorie OLX po nazwie - do ustalenia category_id."""
+    """Zwraca kategorie OLX na jednym poziomie drzewa (dzieci `parent_id`).
+
+    Bez `parent_id` zwraca kategorie glowne. Ogloszenie mozna wystawic
+    tylko w kategorii z `is_leaf=true` - do znalezienia takiej bez recznego
+    klikania po drzewie sluzy GET /api/olx/categories/search.
+    """
     try:
-        return await olx.fetch_categories(session, q)
+        return await olx.fetch_categories(session, parent_id=parent_id, q=q)
+    except olx.OlxError as exc:
+        raise _http_exception_for(exc) from exc
+
+
+@router.get(
+    "/api/olx/categories/search",
+    response_model=list[OlxCategoryView],
+    tags=["olx"],
+)
+async def olx_categories_search(session: SessionDep, q: str) -> list[dict[str, Any]]:
+    """Rekurencyjnie przeszukuje cale drzewo kategorii OLX pod katem lisci.
+
+    Zwraca tylko kategorie z `is_leaf=true` (jedyne, w ktorych mozna
+    wystawic ogloszenie), ktorych nazwa zawiera `q`.
+    """
+    try:
+        return await olx.search_leaf_categories(session, q)
     except olx.OlxError as exc:
         raise _http_exception_for(exc) from exc
 

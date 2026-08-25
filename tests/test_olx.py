@@ -9,6 +9,7 @@ singletonu, szyfrowanie w kolumnach BYTEA i logowanie do olx_operation.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -49,18 +50,62 @@ def _fake_settings(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 @pytest.fixture(autouse=True)
 def _clear_http_client_cache() -> Iterator[None]:
     olx._http_client.cache_clear()
+    olx._partner_http_client.cache_clear()
     yield
     olx._http_client.cache_clear()
+    olx._partner_http_client.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _clear_category_tree_cache() -> Iterator[None]:
+    """Zeruje cache drzewa kategorii (`olx._category_tree_cache`) miedzy testami.
+
+    Bez tego wynik jednego testu (np. zamockowana odpowiedz z falszywymi
+    kategoriami) przecieklby jako "prawdziwy" cache do kolejnych testow w tym
+    samym procesie pytest.
+    """
+    olx._category_tree_cache = None
+    yield
+    olx._category_tree_cache = None
+
+
+async def _insert_valid_token(session: AsyncSession) -> None:
+    """Wstawia wazny (nie wygasly) token OLX.
+
+    Warunek wstepny fetch_categories/search_leaf_categories/fetch_cities,
+    ktore wywoluja `get_access_token`.
+    """
+    await session.execute(
+        text(
+            "INSERT INTO olx_token "
+            "(id, access_token_encrypted, refresh_token_encrypted, "
+            " access_expires_at, scope) "
+            "VALUES (1, :access, :refresh, :expires_at, 'v2 read write')"
+        ),
+        {
+            "access": crypto.encrypt("AT-valid"),
+            "refresh": crypto.encrypt("RT-valid"),
+            "expires_at": datetime.now(UTC) + timedelta(hours=1),
+        },
+    )
+    await session.commit()
 
 
 def _response(status_code: int, body: dict | None = None) -> MagicMock:
-    """Buduje falszywa odpowiedz httpx.Response o zadanym statusie i ciele."""
+    """Buduje falszywa odpowiedz httpx.Response o zadanym statusie i ciele.
+
+    `.text` jest ustawiane obok `.json()` - `_error_detail` czyta `.text`
+    (nie sparsowany JSON), wiec bez tego mockowe wywolania bledow dostalyby
+    MagicMock zamiast str przy zapisie do olx_operation.olx_error.
+    """
     response = MagicMock()
     response.status_code = status_code
     if body is None:
         response.json.side_effect = ValueError("brak ciala odpowiedzi")
+        response.text = ""
     else:
         response.json.return_value = body
+        response.text = json.dumps(body)
     return response
 
 
@@ -175,6 +220,71 @@ def test_build_advert_payload_za_duzo_zdjec_rzuca_blad_walidacji() -> None:
             platform_olx_attribute_value=None,
             image_urls=[f"https://cdn.example.test/{i}.jpg" for i in range(9)],
         )
+
+
+# --------------------------------------------------------------------------
+# _http_client / _error_detail (regresja blokady WAF/CloudFront)
+# --------------------------------------------------------------------------
+
+
+def test_http_client_ma_niestandardowy_user_agent() -> None:
+    """Sprawdza, ze klient OLX nie uzywa domyslnego User-Agenta httpx.
+
+    Domyslny User-Agent httpx ("python-httpx/...") jest przez WAF/CloudFront
+    OLX traktowany jako bot i blokowany 403-ka - regresja, ktora kosztowala
+    sporo czasu na diagnoze. Ten test pilnuje, zeby klient zawsze wysylal
+    wlasny User-Agent (i sensowne Accept/Content-Type).
+    """
+    client = olx._http_client()
+
+    assert client.headers["User-Agent"] == "zibicom-olx/0.1"
+    assert client.headers["User-Agent"] != httpx.Client().headers["User-Agent"]
+    assert client.headers["Accept"] == "application/json"
+    assert client.headers["Content-Type"] == "application/json"
+
+
+def test_partner_http_client_ma_naglowek_version() -> None:
+    """Sprawdza, ze klient Partner API zawsze wysyla naglowek Version.
+
+    Partner API (kategorie/miasta/adverts) odrzuca zadania bez naglowka
+    Version 400-ka "Missing required 'Version' header!". Klient uzywany do
+    tych wywolan musi go wiec zawsze wysylac, obok istniejacych naglowkow
+    (User-Agent/Accept/Content-Type) chroniacych przed blokada WAF/CloudFront.
+    """
+    client = olx._partner_http_client()
+
+    assert client.headers["Version"] == "2.0"
+    assert client.headers["User-Agent"] == "zibicom-olx/0.1"
+    assert client.headers["Accept"] == "application/json"
+    assert client.headers["Content-Type"] == "application/json"
+
+
+def test_http_client_oauth_bez_naglowka_version() -> None:
+    """Sprawdza, ze klient OAuth nie niesie naglowka Version.
+
+    Endpoint OAuth (/api/open/oauth/token) NIE jest czescia Partner API i
+    dziala poprawnie bez naglowka Version - dopisanie go tutaj byloby
+    niepotrzebne (i ryzykowne, gdyby OLX kiedys zaczal go tam walidowac
+    inaczej niz w Partner API), wiec klient OAuth ma go NIE miec.
+    """
+    client = olx._http_client()
+
+    assert "Version" not in client.headers
+
+
+def test_error_detail_cialo_puste_opisuje_blokade_waf() -> None:
+    response = _response(403, body=None)
+
+    assert olx._error_detail(response) == (
+        "pusta odpowiedz — prawdopodobnie blokada WAF/CloudFront"
+    )
+
+
+def test_error_detail_przycina_dlugie_cialo_do_500_znakow() -> None:
+    response = MagicMock()
+    response.text = "x" * 1000
+
+    assert olx._error_detail(response) == "x" * 500
 
 
 # --------------------------------------------------------------------------
@@ -419,7 +529,7 @@ async def test_create_advert_sukces_loguje_operacje_i_zwraca_body(
     fake_client.post = AsyncMock(
         return_value=_response(201, {"id": 999, "status": "new"})
     )
-    monkeypatch.setattr(olx, "_http_client", lambda: fake_client)
+    monkeypatch.setattr(olx, "_partner_http_client", lambda: fake_client)
 
     body = await olx.create_advert(
         db_session, {"title": "x"}, access_token="AT-1", listing_id=listing_id
@@ -447,7 +557,7 @@ async def test_create_advert_blad_http_loguje_i_rzuca_api_error(
     fake_client.post = AsyncMock(
         return_value=_response(422, {"error": "validation_failed"})
     )
-    monkeypatch.setattr(olx, "_http_client", lambda: fake_client)
+    monkeypatch.setattr(olx, "_partner_http_client", lambda: fake_client)
 
     with pytest.raises(olx.OlxApiError):
         await olx.create_advert(db_session, {"title": "x"}, access_token="AT-1")
@@ -468,7 +578,7 @@ async def test_create_advert_blad_sieciowy_loguje_i_rzuca_api_error(
 ) -> None:
     fake_client = MagicMock()
     fake_client.post = AsyncMock(side_effect=httpx.ConnectError("timeout"))
-    monkeypatch.setattr(olx, "_http_client", lambda: fake_client)
+    monkeypatch.setattr(olx, "_partner_http_client", lambda: fake_client)
 
     with pytest.raises(olx.OlxApiError):
         await olx.create_advert(db_session, {"title": "x"}, access_token="AT-1")
@@ -482,3 +592,171 @@ async def test_create_advert_blad_sieciowy_loguje_i_rzuca_api_error(
         )
     ).first()
     assert op == (False, None)
+
+
+# --------------------------------------------------------------------------
+# _unwrap_data / fetch_categories / search_leaf_categories / fetch_cities
+# (rozpakowanie wrappera "data" Partner API + drzewo kategorii)
+# --------------------------------------------------------------------------
+
+_RAW_CATEGORY_TREE = [
+    {
+        "id": 1,
+        "name": "Elektronika",
+        "parent_id": 0,
+        "is_leaf": False,
+        "photos_limit": None,
+        "created_at": "2020-01-01",
+    },
+    {
+        "id": 2,
+        "name": "Gry i Konsole",
+        "parent_id": 1,
+        "is_leaf": False,
+        "photos_limit": None,
+    },
+    {"id": 3, "name": "Gry", "parent_id": 2, "is_leaf": True, "photos_limit": 8},
+    {"id": 4, "name": "Konsole", "parent_id": 2, "is_leaf": True, "photos_limit": 8},
+    {"id": 5, "name": "Telefony", "parent_id": 1, "is_leaf": True, "photos_limit": 4},
+    {
+        "id": 6,
+        "name": "Motoryzacja",
+        "parent_id": 0,
+        "is_leaf": True,
+        "photos_limit": 10,
+    },
+]
+
+
+def test_unwrap_data_rozpakowuje_klucz_data() -> None:
+    assert olx._unwrap_data({"data": [1, 2, 3]}) == [1, 2, 3]
+    assert olx._unwrap_data({"data": {"id": 1}}) == {"id": 1}
+
+
+def test_unwrap_data_bez_klucza_data_zwraca_bez_zmian() -> None:
+    assert olx._unwrap_data([1, 2, 3]) == [1, 2, 3]
+    assert olx._unwrap_data({"error": "invalid_grant"}) == {"error": "invalid_grant"}
+    assert olx._unwrap_data(None) is None
+
+
+async def test_fetch_categories_rozpakowuje_data_i_zwraca_kategorie_glowne(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _insert_valid_token(db_session)
+    fake_client = MagicMock()
+    fake_client.get = AsyncMock(
+        return_value=_response(200, {"data": _RAW_CATEGORY_TREE})
+    )
+    monkeypatch.setattr(olx, "_partner_http_client", lambda: fake_client)
+
+    categories = await olx.fetch_categories(db_session)
+
+    assert {c["id"] for c in categories} == {1, 6}
+    # Zwiezly ksztalt - bez pol spoza _CATEGORY_FIELDS (np. "created_at").
+    assert categories[0].keys() == {
+        "id",
+        "name",
+        "parent_id",
+        "is_leaf",
+        "photos_limit",
+    }
+
+
+async def test_fetch_categories_zwraca_dzieci_podanego_parent_id(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _insert_valid_token(db_session)
+    fake_client = MagicMock()
+    fake_client.get = AsyncMock(
+        return_value=_response(200, {"data": _RAW_CATEGORY_TREE})
+    )
+    monkeypatch.setattr(olx, "_partner_http_client", lambda: fake_client)
+
+    children = await olx.fetch_categories(db_session, parent_id=1)
+
+    assert {c["id"] for c in children} == {2, 5}
+
+
+async def test_fetch_categories_filtruje_po_q_w_obrebie_poziomu(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _insert_valid_token(db_session)
+    fake_client = MagicMock()
+    fake_client.get = AsyncMock(
+        return_value=_response(200, {"data": _RAW_CATEGORY_TREE})
+    )
+    monkeypatch.setattr(olx, "_partner_http_client", lambda: fake_client)
+
+    matches = await olx.fetch_categories(db_session, parent_id=1, q="tel")
+
+    assert [c["id"] for c in matches] == [5]
+
+
+async def test_fetch_categories_drzewo_pobierane_tylko_raz_z_cache(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sprawdza, ze drzewo kategorii jest pobierane z OLX tylko raz.
+
+    Kolejne wywolania (rozne parent_id) NIE odpytuja OLX ponownie - drzewo
+    jest cache'owane w pamieci procesu (`_fetch_category_tree`), co chroni
+    przed limitem OLX 4500 zadan/5 min.
+    """
+    await _insert_valid_token(db_session)
+    fake_client = MagicMock()
+    fake_client.get = AsyncMock(
+        return_value=_response(200, {"data": _RAW_CATEGORY_TREE})
+    )
+    monkeypatch.setattr(olx, "_partner_http_client", lambda: fake_client)
+
+    await olx.fetch_categories(db_session)
+    await olx.fetch_categories(db_session, parent_id=1)
+    await olx.search_leaf_categories(db_session, "gry")
+
+    assert fake_client.get.call_count == 1
+
+
+async def test_search_leaf_categories_zwraca_tylko_liscie_pasujace_rekurencyjnie(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _insert_valid_token(db_session)
+    fake_client = MagicMock()
+    fake_client.get = AsyncMock(
+        return_value=_response(200, {"data": _RAW_CATEGORY_TREE})
+    )
+    monkeypatch.setattr(olx, "_partner_http_client", lambda: fake_client)
+
+    matches = await olx.search_leaf_categories(db_session, "gr")
+
+    # "Gry" (id=3, lisc, dwa poziomy w dol od korzenia) pasuje; "Gry i
+    # Konsole" (id=2) NIE, mimo pasujacej nazwy - to nie lisc (nie da sie w
+    # niej wystawic ogloszenia).
+    assert [c["id"] for c in matches] == [3]
+
+
+async def test_create_advert_rozpakowuje_wrapper_data(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_client = MagicMock()
+    fake_client.post = AsyncMock(
+        return_value=_response(201, {"data": {"id": 999, "status": "new"}})
+    )
+    monkeypatch.setattr(olx, "_partner_http_client", lambda: fake_client)
+
+    body = await olx.create_advert(db_session, {"title": "x"}, access_token="AT-1")
+
+    assert body == {"id": 999, "status": "new"}
+
+
+async def test_fetch_cities_rozpakowuje_wrapper_data(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _insert_valid_token(db_session)
+    fake_client = MagicMock()
+    fake_client.get = AsyncMock(
+        return_value=_response(200, {"data": [{"id": 1, "name": "Kraków"}]})
+    )
+    monkeypatch.setattr(olx, "_partner_http_client", lambda: fake_client)
+
+    cities = await olx.fetch_cities(db_session)
+
+    assert cities == [{"id": 1, "name": "Kraków"}]
