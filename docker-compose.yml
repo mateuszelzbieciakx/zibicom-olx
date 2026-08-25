@@ -1,0 +1,51 @@
+services:
+  db:
+    image: postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: zibicom
+      POSTGRES_USER: zibicom
+      # Haslo nigdy jako zmienna srodowiskowa - tylko plik sekretu.
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
+    volumes:
+      # Migracje uruchamiaja sie alfabetycznie przy pierwszej inicjalizacji bazy.
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+      # Postgres 18 deklaruje wolumen na /var/lib/postgresql (nie /.../data).
+      - pgdata:/var/lib/postgresql
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zibicom -d zibicom"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      APP_ENV: production
+      API_HOST: 0.0.0.0
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: zibicom
+      POSTGRES_USER: zibicom
+    secrets:
+      - postgres_password
+    ports:
+      - "8000:8000"
+
+secrets:
+  postgres_password:
+    file: ./secrets/postgres_password.txt
+
+volumes:
+  pgdata:

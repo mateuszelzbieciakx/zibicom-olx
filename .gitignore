@@ -1,0 +1,27 @@
+# Sekrety - nigdy do repozytorium
+.env
+.env.*
+!.env.example
+secrets/*.txt
+secrets/*
+
+!secrets/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Narzedzia
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# IDE / OS
+.idea/
+.vscode/
+Thumbs.db
+desktop.ini
