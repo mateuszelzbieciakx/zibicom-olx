@@ -40,12 +40,18 @@ services:
       POSTGRES_USER: zibicom
     secrets:
       - postgres_password
+      - r2_access_key_id
+      - r2_secret_access_key
     ports:
       - "8000:8000"
 
 secrets:
   postgres_password:
     file: ./secrets/postgres_password.txt
+  r2_access_key_id:
+    file: ./secrets/r2_access_key_id.txt
+  r2_secret_access_key:
+    file: ./secrets/r2_secret_access_key.txt
 
 volumes:
   pgdata:

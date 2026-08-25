@@ -1,6 +1,6 @@
 """Konfiguracja aplikacji czytana z sekretow Dockera oraz z pliku .env."""
 
-from functools import lru_cache
+from functools import lru_cache, partial
 from pathlib import Path
 from urllib.parse import quote
 
@@ -8,6 +8,7 @@ from pydantic import Field, SecretStr, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DOCKER_SECRETS_DIR = Path("/run/secrets")
+LOCAL_SECRETS_DIR = Path(__file__).resolve().parents[2] / "secrets"
 
 
 def _secrets_dir() -> str | None:
@@ -20,6 +21,27 @@ def _secrets_dir() -> str | None:
         Sciezka do katalogu sekretow albo None, gdy dzialamy poza Dockerem.
     """
     return str(DOCKER_SECRETS_DIR) if DOCKER_SECRETS_DIR.is_dir() else None
+
+
+def _read_local_secret(name: str) -> SecretStr:
+    """Czyta sekret z lokalnego pliku secrets/<name>.txt poza Dockerem.
+
+    Sluzy jako wartosc domyslna pola - jesli sekret przyjdzie z
+    /run/secrets (wyzszy priorytet zrodel pydantic-settings), ta funkcja
+    w ogole sie nie wykona. Uzywane przy uruchamianiu aplikacji lub
+    skryptow bezposrednio na hoscie (poza kontenerem Dockera).
+
+    Args:
+        name: Nazwa pliku sekretu bez rozszerzenia, np. "r2_access_key_id".
+
+    Returns:
+        Zawartosc pliku secrets/<name>.txt jako SecretStr, albo pusty
+        SecretStr, gdy plik nie istnieje.
+    """
+    path = LOCAL_SECRETS_DIR / f"{name}.txt"
+    if path.is_file():
+        return SecretStr(path.read_text(encoding="utf-8").strip())
+    return SecretStr("")
 
 
 class Settings(BaseSettings):
@@ -42,6 +64,11 @@ class Settings(BaseSettings):
         db_pool_size: Rozmiar puli polaczen SQLAlchemy.
         db_connect_timeout: Limit sekund na nawiazanie polaczenia z baza.
         db_echo: Czy logowac zapytania SQL.
+        r2_endpoint: Endpoint S3 API konta Cloudflare R2.
+        r2_bucket: Nazwa bucketu R2 ze zdjeciami ofert.
+        r2_public_base_url: Publiczny adres, pod ktorym OLX pobiera zdjecia.
+        r2_access_key_id: Identyfikator klucza dostepowego R2 (sekret).
+        r2_secret_access_key: Sekretny klucz dostepowy R2 (sekret).
     """
 
     model_config = SettingsConfigDict(
@@ -67,6 +94,18 @@ class Settings(BaseSettings):
     db_pool_size: int = 5
     db_connect_timeout: int = 5
     db_echo: bool = False
+
+    r2_endpoint: str = (
+        "https://55ebb5f870e0b4d84955d5e8cd7411ce.r2.cloudflarestorage.com"
+    )
+    r2_bucket: str = "zibicom-photos"
+    r2_public_base_url: str = "https://pub-f139767f741440dcb875c293ca7116f0.r2.dev"
+    r2_access_key_id: SecretStr = Field(
+        default_factory=partial(_read_local_secret, "r2_access_key_id")
+    )
+    r2_secret_access_key: SecretStr = Field(
+        default_factory=partial(_read_local_secret, "r2_secret_access_key")
+    )
 
     @computed_field  # type: ignore[prop-decorator]
     @property
