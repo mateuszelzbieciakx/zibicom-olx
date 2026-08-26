@@ -284,16 +284,16 @@ async def test_list_platforms_zwraca_slownik(db_session: AsyncSession) -> None:
 # --------------------------------------------------------------------------
 
 
-async def _create_approved_item(
+async def _create_pending_item(
     db_session: AsyncSession,
     *,
-    title: str = "Bloodborne",
+    title: str | None = "Bloodborne",
     price_pln: Decimal = Decimal("150"),
     condition: str = "used",
     platform_code: str = "ps4_ps5",
     photo_urls: list[str] | None = None,
 ) -> tuple[int, int]:
-    """Tworzy partie i JUZ zatwierdzona pozycje ze zdjeciami - do testow publish."""
+    """Tworzy partie i pozycje ze zdjeciami, ze statusem 'pending'."""
     platform_id = (
         await db_session.execute(
             text("SELECT id FROM platform WHERE code = :code"),
@@ -340,7 +340,27 @@ async def _create_approved_item(
             },
         )
     await db_session.commit()
+    return batch_id, item_id
 
+
+async def _create_approved_item(
+    db_session: AsyncSession,
+    *,
+    title: str = "Bloodborne",
+    price_pln: Decimal = Decimal("150"),
+    condition: str = "used",
+    platform_code: str = "ps4_ps5",
+    photo_urls: list[str] | None = None,
+) -> tuple[int, int]:
+    """Tworzy partie i JUZ zatwierdzona pozycje ze zdjeciami - do testow publish."""
+    batch_id, item_id = await _create_pending_item(
+        db_session,
+        title=title,
+        price_pln=price_pln,
+        condition=condition,
+        platform_code=platform_code,
+        photo_urls=photo_urls,
+    )
     approved = await intake.approve_item(db_session, item_id)
     assert approved.status == "approved"
     return batch_id, item_id
@@ -398,6 +418,78 @@ async def test_publish_item_promuje_do_tabel_produkcyjnych(
     assert [tuple(row) for row in photo_rows] == [
         ("https://cdn.example.test/1.jpg", True)
     ]
+
+
+async def test_publish_item_wysyla_category_id_z_platformy(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sprawdza, ze category_id w payloadzie OLX pochodzi z platformy.
+
+    Wartosc bierzemy z platform.olx_category_id (per producent, migracja
+    0005) - NIE z globalnej konfiguracji.
+    """
+    _, item_id = await _create_approved_item(db_session, platform_code="ps4_ps5")
+
+    monkeypatch.setattr(intake.olx, "get_access_token", AsyncMock(return_value="AT-1"))
+    create_advert = AsyncMock(return_value={"id": 12345, "status": "new"})
+    monkeypatch.setattr(intake.olx, "create_advert", create_advert)
+
+    await intake.publish_item(db_session, item_id)
+
+    payload = create_advert.call_args.args[1]
+    assert payload["category_id"] == 2272  # sony, patrz 0005_olx_category_mapping.sql
+
+
+async def test_publish_item_nie_dolacza_ad_delivery_ani_auto_extend(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regresja pustego 400 "Data validation error occurred" przy publikacji.
+
+    Porownanie udanego i odrzuconego payloadu wykazalo, ze "ad_delivery" -
+    tak samo jak "auto_extend_enabled" - jest widoczne w odczycie
+    ogloszenia, ale odrzucane przy tworzeniu. `resolve_delivery_attribute`
+    NIE jest juz wywolywane przy budowaniu payloadu (mockujemy je tutaj
+    tylko po to, zeby test od razu wybuchl, gdyby ktos przypadkiem
+    przywrocil to polaczenie) - `create_advert` w ogole go nie widzi.
+    """
+    _, item_id = await _create_approved_item(db_session, platform_code="xbox360")
+
+    monkeypatch.setattr(intake.olx, "get_access_token", AsyncMock(return_value="AT-1"))
+    resolve_delivery_attribute = AsyncMock(
+        return_value="ef5414d2-1fa4-4344-bf09-d1528cfb58e1"
+    )
+    monkeypatch.setattr(
+        intake.olx, "resolve_delivery_attribute", resolve_delivery_attribute
+    )
+    create_advert = AsyncMock(return_value={"id": 12345, "status": "new"})
+    monkeypatch.setattr(intake.olx, "create_advert", create_advert)
+
+    await intake.publish_item(db_session, item_id)
+
+    payload = create_advert.call_args.args[1]
+    assert "ad_delivery" not in payload
+    assert "auto_extend_enabled" not in payload
+    resolve_delivery_attribute.assert_not_called()
+
+
+async def test_publish_item_platforma_bez_kategorii_olx_rzuca_blad(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sprawdza, ze publikacja platformy bez kategorii OLX odmawia czytelnym bledem.
+
+    "other" nie ma ustalonej platform.olx_category_id (migracja 0005) -
+    publikacja ma odmowic PRZED jakimkolwiek wywolaniem OLX, zamiast wyslac
+    ogloszenie z brakujaca/bledna kategoria.
+    """
+    _, item_id = await _create_approved_item(db_session, platform_code="other")
+
+    create_advert = AsyncMock()
+    monkeypatch.setattr(intake.olx, "create_advert", create_advert)
+
+    with pytest.raises(intake.IntakeValidationError, match="kategorii OLX"):
+        await intake.publish_item(db_session, item_id)
+
+    create_advert.assert_not_called()
 
 
 async def test_publish_item_druga_kopia_dolacza_do_istniejacej_gry(
@@ -489,3 +581,125 @@ async def test_publish_item_blad_olx_wycofuje_cala_transakcje(
         )
     ).scalar_one()
     assert item_status == "approved"
+
+
+# --------------------------------------------------------------------------
+# preview_publish_item
+# --------------------------------------------------------------------------
+
+
+async def test_preview_publish_item_dziala_dla_pozycji_pending(
+    db_session: AsyncSession,
+) -> None:
+    """Sprawdza dostepnosc podgladu dla pozycji w statusie innym niz 'approved'.
+
+    W odroznieniu od `publish_item`, `preview_publish_item` NIE wymaga
+    statusu 'approved' - ma umozliwiac diagnoze problemu PRZED
+    zatwierdzeniem. Zadnego mocka OLX nie potrzeba - podglad nie wykonuje
+    zadnego wywolania OLX (patrz test ponizej o braku ad_delivery).
+    """
+    _, item_id = await _create_pending_item(db_session, platform_code="xbox360")
+
+    payload = await intake.preview_publish_item(db_session, item_id)
+
+    assert payload["category_id"] == 2273  # microsoft, patrz 0005
+    assert {"code": "state", "value": "used"} in payload["attributes"]
+
+
+async def test_preview_publish_item_bez_ad_delivery_i_auto_extend(
+    db_session: AsyncSession,
+) -> None:
+    """Sprawdza brak pol odrzucanych przez POST /adverts w podgladzie.
+
+    Podglad ma pokazywac dokladnie to, co poszloby do OLX (patrz
+    olx.build_advert_payload).
+    """
+    _, item_id = await _create_pending_item(db_session, platform_code="xbox360")
+
+    payload = await intake.preview_publish_item(db_session, item_id)
+
+    assert "ad_delivery" not in payload
+    assert "auto_extend_enabled" not in payload
+
+
+async def test_preview_publish_item_nie_publikuje_ani_nie_zapisuje_niczego(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sprawdza, ze podglad NIE wywoluje create_advert i NIE tworzy rekordow.
+
+    To sedno trybu podgladu - diagnoza bez zuzywania proby na prawdziwej
+    publikacji.
+    """
+    _, item_id = await _create_pending_item(db_session)
+
+    create_advert = AsyncMock()
+    monkeypatch.setattr(intake.olx, "create_advert", create_advert)
+
+    await intake.preview_publish_item(db_session, item_id)
+
+    create_advert.assert_not_called()
+    game_count = (
+        await db_session.execute(text("SELECT COUNT(*) FROM game"))
+    ).scalar_one()
+    assert game_count == 0
+    listing_count = (
+        await db_session.execute(text("SELECT COUNT(*) FROM listing"))
+    ).scalar_one()
+    assert listing_count == 0
+    item_status = (
+        await db_session.execute(
+            text("SELECT status::TEXT FROM intake_item WHERE id = :id"),
+            {"id": item_id},
+        )
+    ).scalar_one()
+    assert item_status == "pending"
+
+
+async def test_preview_publish_item_uzywa_tych_samych_funkcji_co_publish(
+    db_session: AsyncSession,
+) -> None:
+    """Sprawdza, ze podglad odzwierciedla dokladnie to, co wyslalby publish_item.
+
+    Zbudowany tytul (build_title, z przycinaniem segmentow) musi byc
+    identyczny w obu sciezkach - to gwarantuje, ze podglad jest wiarygodna
+    diagnostyka.
+    """
+    _, item_id = await _create_pending_item(
+        db_session, title="Medal of Honor Airborne", platform_code="xbox360"
+    )
+
+    payload = await intake.preview_publish_item(db_session, item_id)
+
+    assert payload["title"] == (
+        "Medal of Honor Airborne | Xbox 360 | Sklep | Kraków | Wysyłka"
+    )
+
+
+async def test_preview_publish_item_platforma_bez_kategorii_rzuca_blad(
+    db_session: AsyncSession,
+) -> None:
+    """Sprawdza, ze podglad odmawia dla platformy bez ustalonej kategorii.
+
+    "other" nie ma ustalonej kategorii - podglad tez ma odmowic czytelnym
+    bledem, tak samo jak publish_item.
+    """
+    _, item_id = await _create_pending_item(db_session, platform_code="other")
+
+    with pytest.raises(intake.IntakeValidationError, match="kategorii OLX"):
+        await intake.preview_publish_item(db_session, item_id)
+
+
+async def test_preview_publish_item_nieistniejacej_pozycji_rzuca_not_found(
+    db_session: AsyncSession,
+) -> None:
+    with pytest.raises(intake.IntakeNotFoundError):
+        await intake.preview_publish_item(db_session, 999_999)
+
+
+async def test_preview_publish_item_bez_tytulu_rzuca_blad(
+    db_session: AsyncSession,
+) -> None:
+    _, item_id = await _create_pending_item(db_session, title=None)
+
+    with pytest.raises(intake.IntakeValidationError, match="tytulu"):
+        await intake.preview_publish_item(db_session, item_id)

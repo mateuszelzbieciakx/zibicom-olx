@@ -72,6 +72,64 @@ class OlxCategoryView(BaseModel):
     photos_limit: int | None
 
 
+class OlxCategoryAttributeValueView(BaseModel):
+    """Jedna z dozwolonych wartosci atrybutu wyboru.
+
+    Attributes:
+        code: Wartosc do wyslania w payloadzie ogloszenia (np. "xbox360").
+        label: Czytelna etykieta (np. "Xbox 360").
+    """
+
+    code: str | None
+    label: str | None
+
+
+class OlxCategoryAttributeView(BaseModel):
+    """Zwiezly ksztalt atrybutu kategorii OLX.
+
+    Attributes:
+        code: Kod atrybutu (klucz w payloadzie ogloszenia -
+            zibicom.olx.build_advert_payload).
+        label: Czytelna nazwa atrybutu.
+        required: Czy OLX wymaga podania tego atrybutu przy publikacji.
+        values: Dozwolone wartosci (atrybuty wyboru) - pusta lista dla
+            wolnego tekstu/liczby.
+    """
+
+    code: str | None
+    label: str | None
+    required: bool
+    values: list[OlxCategoryAttributeValueView]
+
+
+class OlxCityView(BaseModel):
+    """Zwiezly ksztalt miasta OLX zwracany przez /api/olx/cities.
+
+    Attributes:
+        id: Id miasta OLX.
+        name: Nazwa miasta.
+        county: Powiat.
+        region_id: Id wojewodztwa.
+    """
+
+    id: int
+    name: str
+    county: str | None
+    region_id: int | None
+
+
+class OlxDistrictView(BaseModel):
+    """Zwiezly ksztalt dzielnicy OLX (GET /api/olx/cities/{city_id}/districts).
+
+    Attributes:
+        id: Id dzielnicy OLX.
+        name: Nazwa dzielnicy.
+    """
+
+    id: int
+    name: str
+
+
 class OlxExchangeRequest(BaseModel):
     """Kod autoryzacyjny przepisany recznie z paska adresu po przekierowaniu OLX.
 
@@ -201,6 +259,28 @@ async def publish_item(item_id: int, session: SessionDep) -> intake.IntakeItemVi
 
 
 @router.get(
+    "/api/intake/items/{item_id}/publish/preview",
+    response_model=dict[str, Any],
+    tags=["intake"],
+)
+async def preview_publish_item(item_id: int, session: SessionDep) -> dict[str, Any]:
+    """Buduje podglad payloadu OLX dla pozycji, BEZ publikacji.
+
+    Dokladnie ten sam payload, ktory poszedlby do OLX przy POST
+    .../publish (te same funkcje: build_title, build_description,
+    resolve_delivery_attribute, build_advert_payload), ale bez wywolania
+    create_advert - do diagnozowania bledow walidacji OLX bez zuzywania
+    proby na prawdziwej publikacji. Dostepne dla pozycji w dowolnym
+    statusie (nie tylko 'approved'), zeby dalo sie zdiagnozowac problem
+    przed zatwierdzeniem.
+    """
+    try:
+        return await intake.preview_publish_item(session, item_id)
+    except (intake.IntakeError, olx.OlxError) as exc:
+        raise _http_exception_for(exc) from exc
+
+
+@router.get(
     "/api/platforms",
     response_model=list[intake.PlatformView],
     tags=["platforms"],
@@ -284,13 +364,53 @@ async def olx_categories_search(session: SessionDep, q: str) -> list[dict[str, A
 
 
 @router.get(
+    "/api/olx/categories/{category_id}/attributes",
+    response_model=list[OlxCategoryAttributeView],
+    tags=["olx"],
+)
+async def olx_category_attributes(
+    category_id: int, session: SessionDep
+) -> list[dict[str, Any]]:
+    """Zwraca wymagane i opcjonalne atrybuty danej kategorii OLX.
+
+    Do ustalenia, jak przekazac w payloadzie ogloszenia cechy, ktorych OLX
+    nie wyraza przez osobna kategorie (np. konkretna konsola w obrebie
+    kategorii producenta - patrz migracja 0005_olx_category_mapping.sql).
+    """
+    try:
+        return await olx.fetch_category_attributes(session, category_id)
+    except olx.OlxError as exc:
+        raise _http_exception_for(exc) from exc
+
+
+@router.get(
     "/api/olx/cities",
-    response_model=list[dict[str, Any]],
+    response_model=list[OlxCityView],
     tags=["olx"],
 )
 async def olx_cities(session: SessionDep, q: str | None = None) -> list[dict[str, Any]]:
-    """Wyszukuje miasta OLX po nazwie - do ustalenia city_id."""
+    """Wyszukuje miasta OLX po nazwie - do ustalenia city_id.
+
+    Wyszukiwanie ignoruje wielkosc liter i znaki diakrytyczne.
+    """
     try:
         return await olx.fetch_cities(session, q)
+    except olx.OlxError as exc:
+        raise _http_exception_for(exc) from exc
+
+
+@router.get(
+    "/api/olx/cities/{city_id}/districts",
+    response_model=list[OlxDistrictView],
+    tags=["olx"],
+)
+async def olx_city_districts(city_id: int, session: SessionDep) -> list[dict[str, Any]]:
+    """Zwraca dzielnice danego miasta OLX - do ustalenia district_id.
+
+    Puste dla miast bez podzialu na dzielnice (wiekszosc malych
+    miejscowosci) - to prawidlowy wynik, nie blad.
+    """
+    try:
+        return await olx.fetch_districts(session, city_id)
     except olx.OlxError as exc:
         raise _http_exception_for(exc) from exc

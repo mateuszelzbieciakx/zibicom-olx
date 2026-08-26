@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import unicodedata
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from functools import lru_cache
@@ -47,16 +48,21 @@ REFRESH_MARGIN_SECONDS = 60
 MAX_TITLE_LENGTH = 70
 MAX_IMAGES = 8
 
-# Kody atrybutow OLX (per kategoria) - NIE sa czescia zweryfikowanej
-# dokumentacji dostarczonej przy tym zadaniu. OLX przypisuje atrybuty
-# indywidualnie per kategoria, wiec przed pierwsza prawdziwa publikacja
-# trzeba je potwierdzic dla wybranej kategorii (olx_category_id). Bledny kod
-# konczy sie 4xx z OLX (zalogowanym w olx_operation przez create_advert) -
-# NIE tworzy ogloszenia, wiec pomylka tutaj jest bezpieczna do naprawienia.
+# Kody atrybutow OLX (per kategoria) - zweryfikowane empirycznie dla
+# kategorii Xbox (2273, GET /api/olx/categories/2273/attributes, patrz
+# `fetch_category_attributes`): "state" jest WYMAGANY i przyjmuje dokladnie
+# nasze wartosci enuma listing_condition ("new"/"used"), wiec mapuje sie 1:1
+# bez slownika. "type" jest opcjonalny - dozwolone kody sa per kategoria
+# (czyli per producent, patrz migracje 0005/0006), stad
+# platform.olx_attribute_value zamiast stalej wartosci tutaj. Sony (2272) i
+# Nintendo (2274) NIE byly jeszcze zweryfikowane - jesli maja inny kod niz
+# "type" dla tego samego atrybutu, trzeba to sprawdzic przed pierwsza
+# prawdziwa publikacja dla tych producentow. Bledny kod konczy sie 4xx z OLX
+# (zalogowanym w olx_operation przez create_advert) - NIE tworzy ogloszenia,
+# wiec pomylka tutaj jest bezpieczna do naprawienia.
 CONDITION_ATTRIBUTE_CODE = "state"
-PLATFORM_ATTRIBUTE_CODE = "platform"
+PLATFORM_ATTRIBUTE_CODE = "type"
 
-_CONDITION_ATTRIBUTE_VALUE = {"new": "Nowe", "used": "Używane"}
 _CONDITION_PL = {"new": "nowa", "used": "używana"}
 _MANUFACTURER_PL = {"sony": "Sony", "microsoft": "Microsoft", "nintendo": "Nintendo"}
 
@@ -714,18 +720,61 @@ async def search_leaf_categories(session: AsyncSession, q: str) -> list[dict[str
     return _collect_leaf_matches(by_parent, 0, needle, depth=0)
 
 
-async def fetch_cities(
-    session: AsyncSession, q: str | None = None
+def _compact_attribute(raw: dict[str, Any]) -> dict[str, Any]:
+    """Redukuje surowy rekord atrybutu kategorii OLX do pol istotnych dla klienta.
+
+    Ksztalt zweryfikowany empirycznie (GET /categories/2273/attributes):
+    wymagalnosc jest pod kluczem "validation.required", ale dozwolone
+    wartosci sa na NAJWYZSZYM poziomie rekordu ("values", nie
+    "validation.values"), a kazda z nich to `{"code": ..., "label": ...}` -
+    "code" jest wartoscia do wyslania w payloadzie ogloszenia (np. atrybut
+    "type" kategorii Xbox ma wartosc "code": "xbox360", "label": "Xbox 360").
+
+    Args:
+        raw: Surowy rekord atrybutu z odpowiedzi OLX.
+
+    Returns:
+        Slownik z kluczami: code, label, required, values (lista
+        `{"code", "label"}` dozwolonych wartosci - pusta dla atrybutow
+        wolnego tekstu/liczby, bez listy wyboru).
+    """
+    validation = raw.get("validation") or {}
+    required = bool(validation.get("required", raw.get("required", False)))
+    raw_values = raw.get("values") or []
+    values = [
+        {"code": v.get("code", v.get("value")), "label": v.get("label")}
+        if isinstance(v, dict)
+        else {"code": v, "label": None}
+        for v in raw_values
+    ]
+    return {
+        "code": raw.get("code"),
+        "label": raw.get("label", raw.get("name")),
+        "required": required,
+        "values": values,
+    }
+
+
+async def fetch_category_attributes(
+    session: AsyncSession, category_id: int
 ) -> list[dict[str, Any]]:
-    """Wyszukuje miasta OLX po nazwie - pomocnicze, do ustalenia city_id.
+    """Pobiera wymagane i opcjonalne atrybuty danej kategorii OLX.
+
+    Potrzebne do ustalenia, jak przekazac w payloadzie ogloszenia cechy,
+    ktorych OLX NIE wyraza przez osobna kategorie (patrz migracja
+    0005_olx_category_mapping.sql - jedna kategoria "Gry" na producenta, bez
+    rozroznienia generacji konsoli) - np. konkretna konsola w obrebie
+    kategorii "Xbox" (2273), obok juz znanego atrybutu stanu
+    (`CONDITION_ATTRIBUTE_CODE`).
 
     Args:
         session: Sesja bazy danych.
-        q: Fragment nazwy do wyszukania (case-insensitive), albo None dla
-            pelnej listy.
+        category_id: Id kategorii OLX (docelowo lisc drzewa - patrz
+            `search_leaf_categories`).
 
     Returns:
-        Miasta pasujace do `q` (albo wszystkie, gdy `q` jest puste).
+        Atrybuty w zwiezlym ksztalcie (`_compact_attribute`): code, label,
+        required, values.
 
     Raises:
         OlxAuthError: Gdy brak waznej autoryzacji OLX.
@@ -734,18 +783,269 @@ async def fetch_cities(
     token = await get_access_token(session)
     settings = get_settings()
     response = await _partner_http_client().get(
-        f"{settings.olx_api_base_url}{_CITIES_PATH}",
+        f"{settings.olx_api_base_url}{_CATEGORIES_PATH}/{category_id}/attributes",
         headers={"Authorization": f"Bearer {token}"},
     )
-    cities = _parse_list_response(response, operation="fetch_cities")
+    raw_attributes = _parse_list_response(
+        response, operation="fetch_category_attributes"
+    )
+    return [_compact_attribute(a) for a in raw_attributes]
+
+
+_DELIVERY_ATTRIBUTE_CODE = "delivery"
+
+
+async def resolve_delivery_attribute(
+    session: AsyncSession, category_id: int
+) -> str | None:
+    """Ustala kod opcji dostawy "InPost Paczkomat 24/7 S" dla danej kategorii.
+
+    Kod (UUID) tej opcji jest SPECYFICZNY DLA KATEGORII - potwierdzony dla
+    kategorii 2273 (Xbox): "ef5414d2-1fa4-4344-bf09-d1528cfb58e1". Ten sam
+    UUID moze NIE dzialac dla 2272 (PlayStation) czy 2274 (Nintendo), wiec
+    zamiast zakladac wspolna wartosc, funkcja pobiera atrybuty WLASCIWEJ
+    kategorii (`fetch_category_attributes`) i dopasowuje po fragmencie
+    etykiety (label), nie po stalym UUID - "InPost Paczkomat" w tresci
+    etykiety, konczacej sie rozmiarem "S" (odrozniajac od "...24/7 M"/"L").
+
+    Args:
+        session: Sesja bazy danych.
+        category_id: Id kategorii OLX, w ktorej publikowane jest ogloszenie
+            (`platform.olx_category_id`).
+
+    Returns:
+        Kod (UUID) wartosci atrybutu "delivery" pasujacej etykiecie, albo
+        None, gdy kategoria nie ma atrybutu "delivery" albo zadna jego
+        wartosc nie pasuje - wywolujacy (`build_advert_payload`) ma wtedy
+        pominac "ad_delivery" w payloadzie, nie rzucac bledem (to pole
+        opcjonalne).
+
+    Raises:
+        OlxAuthError: Gdy brak waznej autoryzacji OLX.
+        OlxApiError: Gdy wywolanie OLX sie nie powiedzie.
+    """
+    attributes = await fetch_category_attributes(session, category_id)
+    for attribute in attributes:
+        if attribute.get("code") != _DELIVERY_ATTRIBUTE_CODE:
+            continue
+        for value in attribute.get("values", []):
+            label = str(value.get("label") or "")
+            if "InPost Paczkomat" in label and label.rstrip().endswith("S"):
+                return value.get("code")
+    return None
+
+
+# Pola miasta istotne dla klienta (do wyboru city_id) - OLX zwraca tez
+# municipality/latitude/longitude, odrzucane przez `_compact_city`.
+_CITY_FIELDS = ("id", "name", "county", "region_id")
+
+# GET /cities NIE zwraca calej Polski w jednej odpowiedzi (dziesiatki
+# tysiecy miejscowosci) - domyslnie ucina po ~1000 rekordow, BEZ zadnych
+# metadanych stronicowania w ciele ani naglowkach (zweryfikowane empirycznie
+# - brak "links"/"meta"/page-info, tylko {"data": [...]}). OLX akceptuje za
+# to `limit`/`offset` w query stringu; 10000 to potwierdzony maksymalny
+# `limit` (powyzej OLX odrzuca zadanie 400-ka "This value should be between
+# 0 and 10000").
+_CITY_PAGE_LIMIT = 10000
+# Zabezpieczenie `_fetch_city_list` przed nieskonczona petla, gdyby OLX
+# przestal kiedys zwracac strone krotsza niz `_CITY_PAGE_LIMIT` (sygnal
+# konca danych, na ktorym opiera sie petla). 20 stron * 10000 = 200k miast -
+# dzisiejszy pelny zbior to ok. 53 tys., wiec to margines, nie realny limit.
+_MAX_CITY_PAGES = 20
+
+# Cache pelnej (przefiltrowanej i splaszczonej) listy miast OLX w pamieci
+# procesu - miasta praktycznie sie nie zmieniaja, a pelne pobranie to od
+# razu kilka zadan do OLX (limit 4500 zadan/5 min), wiec robimy to raz na
+# proces, tak samo jak `_category_tree_cache`.
+_city_list_cache: list[dict[str, Any]] | None = None
+
+
+def _compact_city(raw: dict[str, Any]) -> dict[str, Any]:
+    """Redukuje surowy rekord miasta OLX do pol istotnych dla klienta.
+
+    Args:
+        raw: Surowy rekord miasta z odpowiedzi OLX.
+
+    Returns:
+        Slownik z wylacznie kluczami `_CITY_FIELDS`.
+    """
+    return {field: raw.get(field) for field in _CITY_FIELDS}
+
+
+def _normalize_search_text(value: str) -> str:
+    """Sprowadza tekst do porownywalnej postaci: male litery, bez diakrytykow.
+
+    Pozwala "krakow"/"krak" znalezc "Krakow" - `unicodedata` dekomponuje
+    wiekszosc polskich znakow diakrytycznych (np. "o" z ogonkiem -> "o" +
+    znak kombinujacy, ktory potem odrzucamy), ale NIE "l" przekreslone
+    ("Lodz") - to jedyny polski znak bez takiej dekompozycji, wiec jest
+    tlumaczony recznie PRZED normalizacja.
+
+    Args:
+        value: Tekst wejsciowy (np. nazwa miasta albo fraza wyszukiwania).
+
+    Returns:
+        Tekst maly-literowy, bez znakow diakrytycznych.
+    """
+    value = value.replace("ł", "l").replace("Ł", "L")
+    decomposed = unicodedata.normalize("NFKD", value)
+    return "".join(c for c in decomposed if not unicodedata.combining(c)).lower()
+
+
+async def _fetch_city_list(session: AsyncSession) -> list[dict[str, Any]]:
+    """Pobiera (i cache'uje w pamieci procesu) cala liste miast OLX.
+
+    Petla stronicuje przez `limit`/`offset` (patrz komentarz przy
+    `_CITY_PAGE_LIMIT`) dopoki OLX nie zwroci strony krotszej niz
+    `_CITY_PAGE_LIMIT` - to sygnal konca danych. Wynik pierwszego wywolania
+    jest trzymany w `_city_list_cache` i ponownie uzywany przez kazde
+    kolejne wyszukiwanie (`fetch_cities`) w tym samym procesie.
+
+    Args:
+        session: Sesja bazy danych (do zdobycia access tokenu przy
+            pierwszym, niecache'owanym wywolaniu).
+
+    Returns:
+        Plaska lista miast w zwiezlym ksztalcie (`_compact_city`).
+
+    Raises:
+        OlxAuthError: Gdy brak waznej autoryzacji OLX (tylko przy pierwszym,
+            niecache'owanym wywolaniu).
+        OlxApiError: Gdy wywolanie OLX sie nie powiedzie (tylko przy
+            pierwszym, niecache'owanym wywolaniu).
+    """
+    global _city_list_cache
+    if _city_list_cache is not None:
+        return _city_list_cache
+
+    token = await get_access_token(session)
+    settings = get_settings()
+    client = _partner_http_client()
+    headers = {"Authorization": f"Bearer {token}"}
+    url = f"{settings.olx_api_base_url}{_CITIES_PATH}"
+
+    cities: list[dict[str, Any]] = []
+    offset = 0
+    for _ in range(_MAX_CITY_PAGES):
+        response = await client.get(
+            url,
+            headers=headers,
+            params={"limit": _CITY_PAGE_LIMIT, "offset": offset},
+        )
+        page = _parse_list_response(response, operation="fetch_cities")
+        cities.extend(_compact_city(c) for c in page)
+        if len(page) < _CITY_PAGE_LIMIT:
+            break
+        offset += _CITY_PAGE_LIMIT
+
+    _city_list_cache = cities
+    return cities
+
+
+async def fetch_cities(
+    session: AsyncSession, q: str | None = None
+) -> list[dict[str, Any]]:
+    """Wyszukuje miasta OLX po nazwie - pomocnicze, do ustalenia city_id.
+
+    OLX ignoruje wyszukiwanie tekstowe w zadaniu do /cities, wiec
+    filtrowanie robimy lokalnie na pobranej (i cache'owanej - patrz
+    `_fetch_city_list`) liscie, bez uwzgledniania wielkosci liter i znakow
+    diakrytycznych (`_normalize_search_text`) - dzieki temu "krakow" i
+    "krak" znajduja "Krakow". Trafienia zaczynajace sie od `q` sa
+    sortowane jako pierwsze (stabilnie, wiec kolejnosc OLX w obrebie kazdej
+    z dwoch grup jest zachowana).
+
+    Args:
+        session: Sesja bazy danych.
+        q: Fragment nazwy do wyszukania, albo None dla pelnej listy.
+
+    Returns:
+        Miasta pasujace do `q` (albo wszystkie, gdy `q` jest puste).
+
+    Raises:
+        OlxAuthError: Gdy brak waznej autoryzacji OLX.
+        OlxApiError: Gdy wywolanie OLX sie nie powiedzie.
+    """
+    cities = await _fetch_city_list(session)
     if not q:
         return cities
-    needle = q.strip().lower()
-    return [c for c in cities if needle in str(c.get("name", "")).lower()]
+    needle = _normalize_search_text(q.strip())
+    if not needle:
+        return cities
+
+    matches = [
+        c for c in cities if needle in _normalize_search_text(str(c.get("name", "")))
+    ]
+    matches.sort(
+        key=lambda c: (
+            not _normalize_search_text(str(c.get("name", ""))).startswith(needle)
+        )
+    )
+    return matches
+
+
+_DISTRICT_FIELDS = ("id", "name")
+
+
+def _compact_district(raw: dict[str, Any]) -> dict[str, Any]:
+    """Redukuje surowy rekord dzielnicy OLX do pol istotnych dla klienta.
+
+    Args:
+        raw: Surowy rekord dzielnicy z odpowiedzi OLX.
+
+    Returns:
+        Slownik z wylacznie kluczami `_DISTRICT_FIELDS`.
+    """
+    return {field: raw.get(field) for field in _DISTRICT_FIELDS}
+
+
+async def fetch_districts(session: AsyncSession, city_id: int) -> list[dict[str, Any]]:
+    """Pobiera dzielnice danego miasta OLX - do ustalenia district_id.
+
+    Uzywa GET /cities/{city_id}/districts, NIE GET /cities/{city_id} - ten
+    drugi zwraca ten sam plaski rekord miasta co /cities (id/name/county/
+    region_id/...), bez zadnego pola z dzielnicami (zweryfikowane
+    empirycznie). GET /districts (bez city_id w sciezce) tez istnieje, ale
+    zwraca NIEFILTROWANA liste WSZYSTKICH dzielnic w Polsce - `city_id` jako
+    query param jest ignorowany, tak samo jak wyszukiwanie tekstowe przy
+    /categories i /cities (patrz `fetch_categories`/`fetch_cities`).
+
+    Male miejscowosci nie maja podzialu na dzielnice - OLX zwraca wtedy
+    pusta liste (zweryfikowane empirycznie), nie blad.
+
+    Args:
+        session: Sesja bazy danych.
+        city_id: Id miasta OLX (z /api/olx/cities).
+
+    Returns:
+        Dzielnice miasta w zwiezlym ksztalcie (`_compact_district`): id,
+        name. Pusta lista, gdy miasto nie ma podzialu na dzielnice.
+
+    Raises:
+        OlxAuthError: Gdy brak waznej autoryzacji OLX.
+        OlxApiError: Gdy wywolanie OLX sie nie powiedzie.
+    """
+    token = await get_access_token(session)
+    settings = get_settings()
+    response = await _partner_http_client().get(
+        f"{settings.olx_api_base_url}{_CITIES_PATH}/{city_id}/districts",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    districts = _parse_list_response(response, operation="fetch_districts")
+    return [_compact_district(d) for d in districts]
 
 
 def build_title(game_title: str, platform_generation: str) -> str:
     """Buduje tytul ogloszenia wg sprawdzonego szablonu sklepu.
+
+    Gdy pelny tytul przekracza MAX_TITLE_LENGTH, kolejno odrzucane sa
+    OPCJONALNE segmenty koncowki - najpierw " | Wymiana", potem takze
+    " | Wysyłka" - NIGDY tytul gry ani nazwa platformy: to jedyne segmenty
+    niosace realna informacje o ofercie, wiec obciecie ktoregos w polowie
+    (albo w calosci) zniweczyloby sens ogloszenia. Jesli nawet bez obu
+    opcjonalnych segmentow tytul sie nie miesci (skrajnie dlugi tytul gry),
+    to przypadek do recznej korekty w poczekalni, nie do automatycznego
+    obcinania - stad blad zamiast dalszego skracania.
 
     Args:
         game_title: Tytul gry.
@@ -754,20 +1054,33 @@ def build_title(game_title: str, platform_generation: str) -> str:
             jest "other".
 
     Returns:
-        Tytul gotowy do wyslania w payloadzie OLX.
+        Tytul gotowy do wyslania w payloadzie OLX - pelny, albo (gdy za
+        dlugi) bez " | Wymiana", albo (gdy nadal za dlugi) bez
+        " | Wymiana" i " | Wysyłka". Tytul gry i platforma sa zawsze w
+        calosci.
 
     Raises:
-        OlxValidationError: Gdy zlozony tytul przekracza MAX_TITLE_LENGTH
-            znakow - lepiej to wykryc przed wyslaniem niz dostac 4xx z OLX
-            (bez srodowiska testowego kazda proba sie liczy).
+        OlxValidationError: Gdy tytul przekracza MAX_TITLE_LENGTH znakow
+            NAWET bez obu opcjonalnych segmentow - lepiej to wykryc przed
+            wyslaniem niz dostac 4xx z OLX (bez srodowiska testowego kazda
+            proba sie liczy).
     """
-    title = f"{game_title} | {platform_generation} | Sklep | Kraków | Wysyłka | Wymiana"
-    if len(title) > MAX_TITLE_LENGTH:
-        raise OlxValidationError(
-            f"Tytul ogloszenia ma {len(title)} znakow (limit {MAX_TITLE_LENGTH}): "
-            f"{title!r}. Skroc tytul gry i sprobuj ponownie."
-        )
-    return title
+    base = f"{game_title} | {platform_generation} | Sklep | Kraków"
+    candidates = [
+        f"{base} | Wysyłka | Wymiana",
+        f"{base} | Wysyłka",
+        base,
+    ]
+    for title in candidates:
+        if len(title) <= MAX_TITLE_LENGTH:
+            return title
+
+    raise OlxValidationError(
+        f"Tytul ogloszenia ma {len(base)} znakow (limit {MAX_TITLE_LENGTH}) "
+        f'nawet bez segmentow " | Wysyłka" i " | Wymiana": {base!r}. Tytul '
+        "gry i platforma nigdy nie sa ucinane - skroc recznie tytul gry w "
+        "poczekalni i sprobuj ponownie."
+    )
 
 
 def build_description(
@@ -820,10 +1133,12 @@ def build_advert_payload(
     description: str,
     category_id: int,
     city_id: int,
+    district_id: int,
     price_pln: Decimal,
     condition: Literal["new", "used"],
     platform_olx_attribute_value: str | None,
     image_urls: Sequence[str],
+    contact_name: str,
 ) -> dict[str, Any]:
     """Buduje payload ogloszenia zgodny z OLX Partner API (POST /adverts).
 
@@ -831,17 +1146,45 @@ def build_advert_payload(
     uploadu. `image_urls` musza wiec byc juz publicznie dostepne (R2), co
     zapewnia `zibicom.photos.upload_photo` przed wywolaniem tej funkcji.
 
+    `advertiser_type` i `contact.name` sa wymagane przez OLX (bez nich
+    create_advert dostaje 400) - konto zibicom jest firmowe, wiec pierwsze
+    jest stala wartoscia "business"; nazwa kontaktowa pochodzi z
+    konfiguracji (`Settings.olx_contact_name`), nie jest stala tutaj.
+
+    NIE ma tu "auto_extend_enabled" ANI "ad_delivery", mimo ze oba sa
+    widoczne w odczycie ogloszenia (GET /adverts/{id}) - POST /adverts
+    odrzuca oba (pierwsze 400-ka "Ten formularz nie powinien zawierac
+    dodatkowych pol", drugie pustym 400 "Data validation error occurred",
+    ustalonym przez porownanie udanego payloadu bez "ad_delivery" z
+    odrzuconym, ktory je mial - wszystkie inne pola byly identyczne). Obecnosc
+    pola w odczycie NIE oznacza, ze jest akceptowane przy zapisie - to
+    najwyrazniej stan wynikowy ustawiany przez OLX po stronie serwera, nie
+    pole wejsciowe. `resolve_delivery_attribute` zostaje w kodzie (przyda
+    sie, gdy ustalimy wlasciwy sposob ustawiania dostawy - prawdopodobnie
+    osobne wywolanie API, nie pole payloadu tworzenia), ale NIE jest tu
+    wywolywane.
+
     Args:
         title: Tytul (zibicom.olx.build_title).
         description: Opis (zibicom.olx.build_description).
         category_id: Id kategorii OLX (z konfiguracji albo /api/olx/categories).
         city_id: Id miasta OLX (z konfiguracji albo /api/olx/cities).
+        district_id: Id dzielnicy OLX (z konfiguracji albo
+            /api/olx/cities/{city_id}/districts), albo 0, gdy nieustawiona -
+            wtedy pomijana w payloadzie. OLX wymaga jej TYLKO dla miast z
+            podzialem na dzielnice (np. Krakow) - wyslanie jej dla malej
+            miejscowosci bez dzielnic psuje publikacje, wiec NIE jest
+            dolaczana bezwarunkowo tak jak city_id.
         price_pln: Cena w PLN.
         condition: Stan egzemplarza.
         platform_olx_attribute_value: Wartosc atrybutu platformy
-            (platform.olx_attribute_value), albo None, gdy nieustawiona w
-            slowniku - wtedy atrybut platformy jest pomijany w payloadzie.
+            (`PLATFORM_ATTRIBUTE_CODE`, `platform.olx_attribute_value`),
+            albo None, gdy nieustawiona w slowniku - wtedy atrybut platformy
+            jest pomijany w payloadzie (w odroznieniu od atrybutu stanu,
+            ktory OLX wymaga zawsze).
         image_urls: Publiczne URL-e zdjec (R2), maks. MAX_IMAGES.
+        contact_name: Nazwa kontaktowa wyswietlana w ogloszeniu
+            (Settings.olx_contact_name).
 
     Returns:
         Payload gotowy do wyslania w tresci POST /adverts.
@@ -855,25 +1198,30 @@ def build_advert_payload(
             f"otrzymano {len(image_urls)}."
         )
 
-    attributes = [
-        {
-            "code": CONDITION_ATTRIBUTE_CODE,
-            "value": _CONDITION_ATTRIBUTE_VALUE[condition],
-        }
-    ]
+    # "state" mapuje sie 1:1 na nasz enum listing_condition ("new"/"used") -
+    # to sa dokladnie kody, ktorych oczekuje OLX (zweryfikowane empirycznie,
+    # patrz komentarz przy CONDITION_ATTRIBUTE_CODE), zaden slownik nie jest
+    # potrzebny.
+    attributes = [{"code": CONDITION_ATTRIBUTE_CODE, "value": condition}]
     if platform_olx_attribute_value:
         attributes.append(
             {"code": PLATFORM_ATTRIBUTE_CODE, "value": platform_olx_attribute_value}
         )
 
+    location: dict[str, Any] = {"city_id": city_id}
+    if district_id > 0:
+        location["district_id"] = district_id
+
     return {
         "title": title,
         "description": description,
         "category_id": category_id,
-        "location": {"city_id": city_id},
+        "location": location,
         "price": {"value": float(price_pln), "currency": "PLN"},
         "images": [{"url": url} for url in image_urls],
         "attributes": attributes,
+        "advertiser_type": "business",
+        "contact": {"name": contact_name},
     }
 
 

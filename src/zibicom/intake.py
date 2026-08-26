@@ -630,6 +630,139 @@ async def _find_or_create_game(
     return created.scalar_one()
 
 
+async def _resolve_platform_for_publish(
+    session: AsyncSession, current: IntakeItemView
+) -> tuple[str, str, str, str | None, int]:
+    """Pobiera i waliduje dane platformy potrzebne do zbudowania payloadu OLX.
+
+    Czysto lokalna walidacja (SELECT + sprawdzenie kategorii) - ZERO wywolan
+    OLX. Celowo osobna funkcja, wywolywana w `publish_item` PRZED
+    `olx.get_access_token`: brak kategorii dla platformy (przypadek "other")
+    ma failowac natychmiast, bez wymagania wczesniej waznej autoryzacji OLX
+    - to tani, lokalny blad, nie powod do angazowania OLX.
+
+    Args:
+        session: Sesja bazy danych.
+        current: Widok pozycji z juz zweryfikowanym platform_id.
+
+    Returns:
+        (manufacturer, platform_generation, console_name,
+        olx_attribute_value, olx_category_id) - gotowe do przekazania do
+        `_build_advert_payload_for_item`.
+
+    Raises:
+        IntakeValidationError: Gdy platforma nie istnieje, albo nie ma
+            ustalonej kategorii OLX (platform.olx_category_id - przypadek
+            "other").
+    """
+    platform_row = (
+        await session.execute(
+            text(
+                "SELECT name, manufacturer::TEXT AS manufacturer, generation, "
+                "olx_attribute_value, olx_category_id "
+                "FROM platform WHERE id = :platform_id"
+            ),
+            {"platform_id": current.platform_id},
+        )
+    ).first()
+    if platform_row is None:
+        raise IntakeValidationError(
+            f"Platforma o id {current.platform_id} nie istnieje."
+        )
+    platform_name, manufacturer, generation, olx_attribute_value, olx_category_id = (
+        platform_row
+    )
+    # Kategoria OLX jest per producent (migracja 0005) - "other" celowo nie
+    # ma ustalonej kategorii (rozne, nieprzewidywalne rodzaje przedmiotow),
+    # wiec bez tej walidacji create_advert wyslalby ogloszenie z
+    # category_id=NULL/nieprawidlowym zamiast czytelnego bledu PRZED
+    # jakimkolwiek wywolaniem OLX.
+    if olx_category_id is None:
+        raise IntakeValidationError(
+            f"Platforma '{platform_name}' nie ma ustalonej kategorii OLX "
+            "(platform.olx_category_id) - nie mozna opublikowac oferty. "
+            "Ustal kategorie przez GET /api/olx/categories/search i "
+            "uzupelnij ja w slowniku platform."
+        )
+    # Platforma "other" nie ma generation/olx_attribute_value w slowniku -
+    # platform_other (opis wpisany recznie przy zatwierdzaniu) jest wtedy
+    # jedynym sensownym opisem konsoli.
+    platform_generation = generation or current.platform_other or platform_name
+    console_name = current.platform_other or platform_name
+    return (
+        manufacturer,
+        platform_generation,
+        console_name,
+        olx_attribute_value,
+        olx_category_id,
+    )
+
+
+def _build_advert_payload_for_item(
+    current: IntakeItemView,
+    *,
+    manufacturer: str,
+    platform_generation: str,
+    console_name: str,
+    olx_attribute_value: str | None,
+    olx_category_id: int,
+) -> dict[str, Any]:
+    """Buduje payload OLX (tytul/opis/payload), bez zadnej publikacji.
+
+    Przyjmuje juz zresolwowane dane platformy (`_resolve_platform_for_publish`)
+    zamiast pobierac je samodzielnie - `publish_item` resolwuje je PRZED
+    `olx.get_access_token` (patrz tamten docstring), wiec ponowne pobieranie
+    tutaj byloby zbednym zapytaniem.
+
+    Wspoldzielone przez `publish_item` (rzeczywista publikacja) i
+    `preview_publish_item` (podglad bez create_advert) - obie sciezki MUSZA
+    uzywac dokladnie tych samych funkcji (`olx.build_title`,
+    `olx.build_description`, `olx.build_advert_payload`), inaczej podglad
+    przestalby byc wiarygodna diagnostyka tego, co faktycznie poszloby do
+    OLX. NIE wywoluje `olx.resolve_delivery_attribute` - "ad_delivery" jest
+    polem widocznym w odczycie ogloszenia, ale odrzucanym przy tworzeniu
+    (patrz `olx.build_advert_payload`), wiec nie ma sensu go tu ustalac.
+
+    Synchroniczna i bezstanowa (zero zapytan do bazy/OLX) - w odroznieniu od
+    poprzedniej wersji, ktora wywolywala resolve_delivery_attribute.
+
+    Args:
+        current: Widok pozycji z juz zweryfikowanym title/price_pln/condition.
+        manufacturer: Producent platformy (`_resolve_platform_for_publish`).
+        platform_generation: Etykieta generacji do tytulu.
+        console_name: Nazwa konsoli do opisu.
+        olx_attribute_value: Wartosc atrybutu platformy, albo None.
+        olx_category_id: Id kategorii OLX.
+
+    Returns:
+        Payload gotowy do wyslania w tresci POST /adverts.
+
+    Raises:
+        olx.OlxValidationError: Gdy tytul albo liczba zdjec przekracza limit
+            OLX.
+    """
+    settings = get_settings()
+    title = olx.build_title(current.title, platform_generation)
+    description = olx.build_description(
+        manufacturer=manufacturer,
+        console_name=console_name,
+        game_title=current.title,
+        condition=current.condition,
+    )
+    return olx.build_advert_payload(
+        title=title,
+        description=description,
+        category_id=olx_category_id,
+        city_id=settings.olx_city_id,
+        district_id=settings.olx_district_id,
+        price_pln=current.price_pln,
+        condition=current.condition,
+        platform_olx_attribute_value=olx_attribute_value,
+        image_urls=current.photo_urls,
+        contact_name=settings.olx_contact_name,
+    )
+
+
 async def publish_item(session: AsyncSession, item_id: int) -> IntakeItemView:
     """Publikuje zatwierdzona pozycje na OLX i promuje ja do tabel produkcyjnych.
 
@@ -654,8 +787,9 @@ async def publish_item(session: AsyncSession, item_id: int) -> IntakeItemView:
 
     Raises:
         IntakeNotFoundError: Gdy pozycja nie istnieje.
-        IntakeValidationError: Gdy pozycja nie ma statusu 'approved', albo
-            nie ma przypisanej platformy.
+        IntakeValidationError: Gdy pozycja nie ma statusu 'approved', nie ma
+            przypisanej platformy, albo platforma nie ma ustalonej kategorii
+            OLX (platform.olx_category_id - przypadek "other").
         olx.OlxError: Gdy publikacja na OLX sie nie powiedzie (brak
             autoryzacji, naruszenie limitu OLX, blad API) - transakcja jest
             wtedy w calosci wycofywana.
@@ -674,31 +808,17 @@ async def publish_item(session: AsyncSession, item_id: int) -> IntakeItemView:
         raise IntakeValidationError(
             "Nie mozna opublikowac pozycji bez tytulu, ceny albo stanu."
         )
-
-    platform_row = (
-        await session.execute(
-            text(
-                "SELECT name, manufacturer::TEXT AS manufacturer, generation, "
-                "olx_attribute_value FROM platform WHERE id = :platform_id"
-            ),
-            {"platform_id": current.platform_id},
-        )
-    ).first()
-    if platform_row is None:
-        raise IntakeValidationError(
-            f"Platforma o id {current.platform_id} nie istnieje."
-        )
-    platform_name, manufacturer, generation, olx_attribute_value = platform_row
-    # Platforma "other" nie ma generation/olx_attribute_value w slowniku -
-    # platform_other (opis wpisany recznie przy zatwierdzaniu) jest wtedy
-    # jedynym sensownym opisem konsoli.
-    platform_generation = generation or current.platform_other or platform_name
-    console_name = current.platform_other or platform_name
+    (
+        manufacturer,
+        platform_generation,
+        console_name,
+        olx_attribute_value,
+        olx_category_id,
+    ) = await _resolve_platform_for_publish(session, current)
 
     try:
         access_token = await olx.get_access_token(session)
 
-        settings = get_settings()
         game_id = await _find_or_create_game(
             session, current.title, current.platform_id
         )
@@ -733,22 +853,13 @@ async def publish_item(session: AsyncSession, item_id: int) -> IntakeItemView:
                 },
             )
 
-        title = olx.build_title(current.title, platform_generation)
-        description = olx.build_description(
+        payload = _build_advert_payload_for_item(
+            current,
             manufacturer=manufacturer,
+            platform_generation=platform_generation,
             console_name=console_name,
-            game_title=current.title,
-            condition=current.condition,
-        )
-        payload = olx.build_advert_payload(
-            title=title,
-            description=description,
-            category_id=settings.olx_category_id,
-            city_id=settings.olx_city_id,
-            price_pln=current.price_pln,
-            condition=current.condition,
-            platform_olx_attribute_value=olx_attribute_value,
-            image_urls=current.photo_urls,
+            olx_attribute_value=olx_attribute_value,
+            olx_category_id=olx_category_id,
         )
 
         advert = await olx.create_advert(
@@ -782,6 +893,61 @@ async def publish_item(session: AsyncSession, item_id: int) -> IntakeItemView:
 
     await session.commit()
     return await _get_item_view(session, item_id)
+
+
+async def preview_publish_item(session: AsyncSession, item_id: int) -> dict[str, Any]:
+    """Buduje podglad payloadu OLX dla pozycji, BEZ publikacji.
+
+    Uzywa `_build_advert_payload_for_item` - dokladnie tych samych funkcji
+    co `publish_item` (`olx.build_title`, `olx.build_description`,
+    `olx.build_advert_payload`) - ale NIE wywoluje `olx.create_advert` i NIE
+    zapisuje niczego do `game`/`listing`/`listing_photo`. Do diagnozowania
+    bledow walidacji OLX (np. za dlugi tytul, zla kategoria) bez zuzywania
+    proby na prawdziwej publikacji - OLX nie ma srodowiska testowego, wiec
+    kazda proba `publish_item` to prawdziwe ogloszenie.
+
+    W ODROZNIENIU od `publish_item`, dostepne dla pozycji w DOWOLNYM
+    statusie (nie tylko 'approved') - zeby dalo sie zdiagnozowac problem
+    PRZED zatwierdzeniem.
+
+    Args:
+        session: Sesja bazy danych.
+        item_id: Identyfikator pozycji poczekalni.
+
+    Returns:
+        Payload, ktory poszedlby do POST /adverts przy prawdziwej publikacji
+        (`publish_item`).
+
+    Raises:
+        IntakeNotFoundError: Gdy pozycja nie istnieje.
+        IntakeValidationError: Gdy pozycji brakuje platformy, tytulu, ceny
+            albo stanu, platforma nie istnieje, albo nie ma ustalonej
+            kategorii OLX (platform.olx_category_id - przypadek "other").
+        olx.OlxValidationError: Gdy tytul albo liczba zdjec przekracza limit
+            OLX.
+    """
+    current = await _get_item_view(session, item_id)
+    if current.platform_id is None:
+        raise IntakeValidationError("Nie mozna zbudowac podgladu bez platformy.")
+    if current.title is None or current.price_pln is None or current.condition is None:
+        raise IntakeValidationError(
+            "Nie mozna zbudowac podgladu bez tytulu, ceny albo stanu."
+        )
+    (
+        manufacturer,
+        platform_generation,
+        console_name,
+        olx_attribute_value,
+        olx_category_id,
+    ) = await _resolve_platform_for_publish(session, current)
+    return _build_advert_payload_for_item(
+        current,
+        manufacturer=manufacturer,
+        platform_generation=platform_generation,
+        console_name=console_name,
+        olx_attribute_value=olx_attribute_value,
+        olx_category_id=olx_category_id,
+    )
 
 
 async def list_platforms(session: AsyncSession) -> list[PlatformView]:

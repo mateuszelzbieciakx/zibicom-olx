@@ -79,10 +79,15 @@ class Settings(BaseSettings):
         olx_auth_base_url: Host, pod ktorym OLX obsluguje logowanie OAuth.
         olx_api_base_url: Baza REST API OLX Partner (kategorie, miasta,
             ogloszenia) oraz wymiana/odswiezenie tokenu.
-        olx_category_id: Domyslna kategoria OLX dla publikowanych ofert
-            (0 = nieustawiona, trzeba wybrac przez /api/olx/categories).
         olx_city_id: Domyslne miasto OLX dla publikowanych ofert
             (0 = nieustawione, trzeba wybrac przez /api/olx/cities).
+        olx_district_id: Domyslna dzielnica OLX dla publikowanych ofert
+            (0 = nieustawiona - w payloadzie pomijana, patrz
+            build_advert_payload). Wymagana przez OLX TYLKO dla miast z
+            podzialem na dzielnice (np. Krakow) - male miejscowosci go nie
+            maja; wybierz przez /api/olx/cities/{city_id}/districts.
+        olx_contact_name: Nazwa kontaktowa wyswietlana w ogloszeniu OLX
+            (pole "contact.name" wymagane przez Partner API).
         token_encryption_key: Klucz Fernet do szyfrowania tokenow OLX w
             bazie (sekret). Nie moze trafic do bazy - patrz
             migrations/0004_olx_token.sql.
@@ -140,8 +145,9 @@ class Settings(BaseSettings):
     )
     olx_auth_base_url: str = "https://www.olx.pl"
     olx_api_base_url: str = "https://www.olx.pl/api/partner"
-    olx_category_id: int = 0
     olx_city_id: int = 0
+    olx_district_id: int = 0
+    olx_contact_name: str = "ZibiCom"
 
     token_encryption_key: SecretStr = Field(
         default_factory=partial(_read_local_secret, "token_encryption_key")
