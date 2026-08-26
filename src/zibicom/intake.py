@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from zibicom import grouping, olx, photos, vision
 from zibicom.config import get_settings
-from zibicom.models import PlatformCode
+from zibicom.models import PhotoExtraction, PlatformCode
 
 logger = logging.getLogger(__name__)
 
@@ -363,19 +363,167 @@ async def _platform_id_for_code(
     return row[0] if row is not None else None
 
 
+async def _save_group(
+    session: AsyncSession,
+    batch_id: int,
+    position: int,
+    group: grouping.GroupedListing,
+    photo_ids: list[int],
+) -> int:
+    """Zapisuje jeden domkniety egzemplarz jako intake_item i COMMITUJE.
+
+    Insert + przypisanie zdjec + commit w jednym kroku (nie tylko `add` do
+    sesji): operator ma zobaczyc kazdy nowo domkniety egzemplarz na GUI
+    najpozniej 2s po jego zamknieciu (`extraction_progress` odpytuje z
+    zupelnie innej sesji/transakcji), a commit dopiero na koncu calej
+    partii oznaczalby wielominutowe oczekiwanie na pierwsza karte. Commit
+    daje tez wznawialnosc "za darmo": jesli proces padnie miedzy dwoma
+    wywolaniami `_save_group`, ta funkcja NIGDY nie zostala wywolana dla
+    biezacej (jeszcze otwartej) grupy, wiec nie ma czesciowego zapisu do
+    posprzatania - INSERT+UPDATE ponizej sa niecommitowane razem, wiec
+    ewentualny crash miedzy nimi cofa oba (patrz `extract_batch`, ktory
+    przed wywolaniem tej funkcji sprawdza, czy grupa nie zostala juz
+    zapisana w poprzednim przebiegu).
+
+    Args:
+        session: Sesja bazy danych.
+        batch_id: Identyfikator partii.
+        position: Numer pozycji w partii (intake_item.position).
+        group: Scalony opis egzemplarza (`grouping.IncrementalGrouper`).
+        photo_ids: Id zdjec nalezacych do tego egzemplarza, w kolejnosci.
+
+    Returns:
+        Id nowo utworzonej pozycji.
+    """
+    platform_id = await _platform_id_for_code(session, group.platform)
+
+    item_result = await session.execute(
+        text(
+            "INSERT INTO intake_item "
+            "(batch_id, position, title, platform_id, platform_other, "
+            " price_pln, condition, ai_warning) "
+            "VALUES (:batch_id, :position, :title, :platform_id, "
+            " :platform_other, :price_pln, "
+            " CAST(:condition AS listing_condition), :ai_warning) "
+            "RETURNING id"
+        ),
+        {
+            "batch_id": batch_id,
+            "position": position,
+            "title": group.title,
+            "platform_id": platform_id,
+            "platform_other": group.platform_other,
+            "price_pln": group.price_pln,
+            "condition": group.condition,
+            "ai_warning": group.warning,
+        },
+    )
+    item_id = item_result.scalar_one()
+
+    await session.execute(
+        text("UPDATE intake_photo SET item_id = :item_id WHERE id = ANY(:photo_ids)"),
+        {"item_id": item_id, "photo_ids": photo_ids},
+    )
+    await session.commit()
+    return item_id
+
+
+def _recognize_with_fallback(
+    photo_id: int, batch_id: int, public_url: str
+) -> PhotoExtraction:
+    """Rozpoznaje jedno zdjecie; blad tego JEDNEGO zdjecia nie przerywa partii.
+
+    `vision.recognize_photo` juz samo lapie wiekszosc bledow wywolania
+    Gemini i zwraca bezpieczny wynik zamiast rzucac wyjatek - jedyny
+    wyjatek od tej reguly to `GeminiQuotaExceededError` (celowo
+    propagowany dalej, zeby przerwac cala partie, patrz jego docstring) i
+    blad POBRANIA zdjecia z R2 (`photos.download_photo`), ktorego
+    `recognize_photo` w ogole nie widzi. Ta funkcja domyka ta druga luke:
+    kazdy inny blad (siec, R2, nieoczekiwany wyjatek) jest logowany i
+    zamieniany na PhotoExtraction z notatka zamiast wywracac cala partie -
+    jedno wadliwe zdjecie ma zostac pominiete, nie zablokowac reszty.
+
+    Args:
+        photo_id: Identyfikator zdjecia (do logu).
+        batch_id: Identyfikator partii (do logu).
+        public_url: Publiczny URL zdjecia do pobrania z R2.
+
+    Returns:
+        Wynik rozpoznania, albo bezpieczny placeholder z notatka o bledzie.
+
+    Raises:
+        vision.GeminiQuotaExceededError: Gdy wyczerpano dzienny limit
+            Gemini - przerywa cala partie (ponawianie nic by nie dalo).
+    """
+    try:
+        raw = photos.download_photo(public_url)
+        return vision.recognize_photo(raw)
+    except vision.GeminiQuotaExceededError:
+        raise
+    except Exception as exc:
+        logger.exception(
+            "Rozpoznanie zdjecia %s (partia %s) nie powiodlo sie - "
+            "kontynuuje partie z pustym opisem tego zdjecia.",
+            photo_id,
+            batch_id,
+        )
+        return PhotoExtraction(
+            platform=PlatformCode.OTHER,
+            title_confident=False,
+            price_confident=False,
+            note=f"Blad rozpoznania: {exc}",
+        )
+
+
 async def extract_batch(session: AsyncSession, batch_id: int) -> int:
     """Puszcza zdjecia partii przez rozpoznanie AI i grupuje je w pozycje.
+
+    PRZYROSTOWA i WZNAWIALNA. Kazdy domkniety egzemplarz (granica -
+    `grouping.IncrementalGrouper`, patrz tamten docstring) jest zapisywany
+    do intake_item i COMMITOWANY natychmiast (`_save_group`) - operator
+    widzi i moze edytowac pierwsze pozycje, zanim reszta partii sie
+    doliczy, zamiast czekac na koniec calej partii (przy 150 zdjeciach to
+    kilkanascie minut bezczynnosci).
+
+    WZNAWIALNOSC jest tu najwazniejszym wymaganiem: przed ta zmiana
+    ekstrakcja byla atomowa (cala partia albo nic), wiec przerwanie w
+    trakcie (restart procesu, blad) nigdy nie zostawialo czesciowego
+    stanu do posprzatania. Teraz zostawia - i ponowne wywolanie tej
+    funkcji NA TEJ SAMEJ partii MUSI je bezpiecznie kontynuowac, a nie
+    zdublowac. Osiagniete przez pominiecie:
+    - zdjec z juz wypelnionym `ai_raw` (nie wywoluje ponownie ani R2, ani
+      Gemini - wczytuje zapisany wczesniej wynik),
+    - egzemplarzy, ktorych zdjecia maja juz przypisane `item_id` (nie
+      tworzy drugiego intake_item dla tej samej grupy).
+    Bez tego drugiego punktu wznowienie tworzyloby DUPLIKATY pozycji -
+    a kazda duplikat, ktory dotrwa do publikacji, to podwojne ogloszenie
+    na OLX (ten blad juz raz w tym projekcie wystapil). Bezpieczenstwo
+    bierze sie z tego, ze `grouping.IncrementalGrouper` jest odtwarzany
+    od zdjecia #1 partii przy KAZDYM wywolaniu (rowniez wznowieniu) -
+    deterministyczny algorytm na tych samych danych (ai_raw sie nie
+    zmienia) zawsze wyznacza te same granice grup, wiec grupy juz
+    zapisane w poprzednim przebiegu sa rozpoznawane po tym, ze ich zdjecia
+    maja juz `item_id`, i po prostu pomijane.
+
+    Blad rozpoznania POJEDYNCZEGO zdjecia (siec, R2, nieoczekiwany blad
+    Gemini) nie przerywa partii - `_recognize_with_fallback` loguje go i
+    zwraca placeholder z notatka, ekstrakcja partii biegnie dalej.
+    Wyjatkiem jest `vision.GeminiQuotaExceededError` (wyczerpany dzienny
+    limit Gemini) - to blad systemowy, nie wada jednego zdjecia, wiec
+    nadal przerywa cala partie (status 'failed'), tak jak poprzednio.
 
     Args:
         session: Sesja bazy danych.
         batch_id: Identyfikator partii.
 
     Returns:
-        Liczba utworzonych pozycji (intake_item).
+        Liczba pozycji NOWO utworzonych w TYM wywolaniu (przy wznowieniu
+        nie liczy pozycji zapisanych w poprzednim przebiegu).
 
     Raises:
         IntakeNotFoundError: Gdy partia nie istnieje.
-        IntakeError: Gdy pobranie ktoregos zdjecia z R2 sie nie powiedzie.
+        IntakeError: Gdy partia zostanie przerwana (np. wyczerpany limit
+            Gemini) - status partii ustawiany na 'failed'.
     """
     if not await _batch_exists(session, batch_id):
         raise IntakeNotFoundError(f"Partia o id {batch_id} nie istnieje.")
@@ -388,73 +536,67 @@ async def extract_batch(session: AsyncSession, batch_id: int) -> int:
     photo_rows = (
         await session.execute(
             text(
-                "SELECT id, public_url FROM intake_photo "
+                "SELECT id, public_url, ai_raw, item_id FROM intake_photo "
                 "WHERE batch_id = :batch_id ORDER BY position"
             ),
             {"batch_id": batch_id},
         )
     ).all()
+    next_position = (
+        await session.execute(
+            text("SELECT COUNT(*) FROM intake_item WHERE batch_id = :batch_id"),
+            {"batch_id": batch_id},
+        )
+    ).scalar_one() + 1
 
+    grouper = grouping.IncrementalGrouper()
+    created = 0
     try:
-        extractions = []
-        for photo_id, public_url in photo_rows:
-            raw = photos.download_photo(public_url)
-            extraction = vision.recognize_photo(raw)
-            await session.execute(
-                text(
-                    "UPDATE intake_photo SET ai_raw = CAST(:ai_raw AS jsonb) "
-                    "WHERE id = :photo_id"
-                ),
-                {
-                    "photo_id": photo_id,
-                    "ai_raw": json.dumps(extraction.model_dump(mode="json")),
-                },
-            )
-            # Commit per zdjecie (nie tylko na koncu funkcji): ekstrakcja duzej
-            # partii trwa minuty i biegnie w tle na wlasnej sesji, a operator
-            # sledzi postep przez `extraction_progress` z zupelnie innej sesji/
-            # transakcji - bez tego commita nie widzialaby zadnego wiersza z
-            # wypelnionym ai_raw, dopoki caly przebieg by sie nie skonczyl.
-            await session.commit()
-            extractions.append(extraction)
+        # (photo_id, czy ta grupa byla juz zapisana w poprzednim przebiegu)
+        # dla zdjec biezacej, jeszcze niedomknietej grupy.
+        pending: list[tuple[int, bool]] = []
 
-        groups = grouping.group_photos(extractions)
+        for photo_id, public_url, ai_raw, item_id in photo_rows:
+            pending.append((photo_id, item_id is not None))
 
-        photo_ids = iter(row[0] for row in photo_rows)
-        created = 0
-        for position, group in enumerate(groups, start=1):
-            platform_id = await _platform_id_for_code(session, group.platform)
+            if ai_raw is not None:
+                extraction = PhotoExtraction.model_validate(ai_raw)
+            else:
+                extraction = _recognize_with_fallback(photo_id, batch_id, public_url)
+                await session.execute(
+                    text(
+                        "UPDATE intake_photo SET ai_raw = CAST(:ai_raw AS jsonb) "
+                        "WHERE id = :photo_id"
+                    ),
+                    {
+                        "photo_id": photo_id,
+                        "ai_raw": json.dumps(extraction.model_dump(mode="json")),
+                    },
+                )
+                # Commit per zdjecie: GUI odpytuje postep rozpoznania z
+                # zupelnie innej sesji/transakcji (patrz extraction_progress).
+                await session.commit()
 
-            item_result = await session.execute(
-                text(
-                    "INSERT INTO intake_item "
-                    "(batch_id, position, title, platform_id, platform_other, "
-                    " price_pln, condition, ai_warning) "
-                    "VALUES (:batch_id, :position, :title, :platform_id, "
-                    " :platform_other, :price_pln, "
-                    " CAST(:condition AS listing_condition), :ai_warning) "
-                    "RETURNING id"
-                ),
-                {
-                    "batch_id": batch_id,
-                    "position": position,
-                    "title": group.title,
-                    "platform_id": platform_id,
-                    "platform_other": group.platform_other,
-                    "price_pln": group.price_pln,
-                    "condition": group.condition,
-                    "ai_warning": group.warning,
-                },
-            )
-            item_id = item_result.scalar_one()
+            closed = grouper.add_photo(extraction)
+            if closed is not None:
+                group = pending[:-1]
+                pending = [pending[-1]]
+                already_saved = any(saved for _, saved in group)
+                if not already_saved:
+                    await _save_group(
+                        session,
+                        batch_id,
+                        next_position,
+                        closed,
+                        [pid for pid, _ in group],
+                    )
+                    next_position += 1
+                    created += 1
 
-            group_photo_ids = [next(photo_ids) for _ in group.photos]
-            await session.execute(
-                text(
-                    "UPDATE intake_photo SET item_id = :item_id "
-                    "WHERE id = ANY(:photo_ids)"
-                ),
-                {"item_id": item_id, "photo_ids": group_photo_ids},
+        closed = grouper.close()
+        if closed is not None and not any(saved for _, saved in pending):
+            await _save_group(
+                session, batch_id, next_position, closed, [pid for pid, _ in pending]
             )
             created += 1
 
@@ -559,6 +701,40 @@ async def list_batches(session: AsyncSession) -> list[BatchView]:
     return [BatchView(**row._mapping) for row in rows]
 
 
+async def _list_items_by_batch(
+    session: AsyncSession, batch_id: int, *, after_item_id: int | None = None
+) -> list[IntakeItemView]:
+    """Wspolna implementacja `list_items`/`list_items_after`.
+
+    Args:
+        session: Sesja bazy danych.
+        batch_id: Identyfikator partii.
+        after_item_id: Gdy podane, zwraca wylacznie pozycje z id wiekszym
+            niz ta wartosc (patrz `list_items_after`).
+
+    Returns:
+        Pozycje partii w kolejnosci `intake_item.position`.
+    """
+    where = "ii.batch_id = :batch_id"
+    params: dict[str, Any] = {"batch_id": batch_id}
+    if after_item_id is not None:
+        where += " AND ii.id > :after_item_id"
+        params["after_item_id"] = after_item_id
+
+    rows = (
+        await session.execute(
+            text(f"{_ITEM_VIEW_SELECT} WHERE {where} ORDER BY ii.position"),
+            params,
+        )
+    ).all()
+
+    items = []
+    for row in rows:
+        photo_urls = await _photo_urls_for_item(session, row._mapping["id"])
+        items.append(_row_to_item_view(row, photo_urls))
+    return items
+
+
 async def list_items(session: AsyncSession, batch_id: int) -> list[IntakeItemView]:
     """Zwraca pozycje partii przygotowane do zatwierdzenia przez czlowieka.
 
@@ -575,22 +751,36 @@ async def list_items(session: AsyncSession, batch_id: int) -> list[IntakeItemVie
     """
     if not await _batch_exists(session, batch_id):
         raise IntakeNotFoundError(f"Partia o id {batch_id} nie istnieje.")
+    return await _list_items_by_batch(session, batch_id)
 
-    rows = (
-        await session.execute(
-            text(
-                f"{_ITEM_VIEW_SELECT} "
-                "WHERE ii.batch_id = :batch_id ORDER BY ii.position"
-            ),
-            {"batch_id": batch_id},
-        )
-    ).all()
 
-    items = []
-    for row in rows:
-        photo_urls = await _photo_urls_for_item(session, row._mapping["id"])
-        items.append(_row_to_item_view(row, photo_urls))
-    return items
+async def list_items_after(
+    session: AsyncSession, batch_id: int, after_item_id: int
+) -> list[IntakeItemView]:
+    """Zwraca pozycje partii utworzone PO danym id - do przyrostowego dopiecia kart.
+
+    Uzywane przez poling ekstrakcji w toku (fragment postepu): kazde
+    odpytanie prosi tylko o pozycje nowsze niz ostatnia juz pokazana w
+    przegladarce, zeby UI moglo je DOPIAC (`hx-swap-oob="beforeend"`) bez
+    przerenderowywania juz wyswietlonych kart - inaczej znikalaby
+    niezapisana edycja operatora w pierwszej karcie przy kolejnym
+    odpytaniu.
+
+    Args:
+        session: Sesja bazy danych.
+        batch_id: Identyfikator partii.
+        after_item_id: Zwroc tylko pozycje z id wiekszym niz ten (0, zeby
+            zwrocic wszystkie pozycje partii).
+
+    Returns:
+        Pozycje partii z id > after_item_id, w kolejnosci `intake_item.position`.
+
+    Raises:
+        IntakeNotFoundError: Gdy partia nie istnieje.
+    """
+    if not await _batch_exists(session, batch_id):
+        raise IntakeNotFoundError(f"Partia o id {batch_id} nie istnieje.")
+    return await _list_items_by_batch(session, batch_id, after_item_id=after_item_id)
 
 
 async def update_item(

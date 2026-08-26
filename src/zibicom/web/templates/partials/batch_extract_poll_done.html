@@ -1,0 +1,6 @@
+{% include "partials/batch_items_append.html" %}
+{% if extraction_error %}
+{% include "partials/batch_extract_button.html" %}
+{% else %}
+<div id="batch-progress"></div>
+{% endif %}

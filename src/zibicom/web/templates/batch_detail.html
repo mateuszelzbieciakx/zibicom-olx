@@ -5,16 +5,19 @@
 <h1 class="text-xl font-semibold mb-1">Partia {{ batch_id }}</h1>
 <p class="text-sm text-slate-500 mb-4">{{ photo_count }} zdjec</p>
 
-{% if items %}
 {% include "partials/batch_items.html" %}
+
+{% if extracting %}
+{% include "partials/batch_progress.html" %}
+{% elif extraction_error or not items %}
+{% include "partials/batch_extract_button.html" %}
+{% endif %}
+
+{% if not extracting %}
 {% if publishing %}
 {% include "partials/batch_publish_progress.html" %}
 {% elif approved_count %}
 {% include "partials/batch_publish_button.html" %}
 {% endif %}
-{% elif extracting %}
-{% include "partials/batch_progress.html" %}
-{% else %}
-{% include "partials/batch_extract_button.html" %}
 {% endif %}
 {% endblock %}

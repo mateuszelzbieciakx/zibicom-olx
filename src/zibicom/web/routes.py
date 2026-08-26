@@ -101,10 +101,14 @@ async def _run_extraction(batch_id: int) -> None:
     Wlasna sesja, bo ta z zadania HTTP jest zamykana, gdy tylko odpowiedz
     zostanie wyslana - `extract_batch` musi dzialac dlugo po tym momencie.
 
-    Ograniczenie zaakceptowane dla jednego operatora: restart procesu w
-    trakcie ekstrakcji gubi jej postep (brak trwalej kolejki zadan - `_running`
-    zyje tylko w pamieci). Docelowo: prawdziwa kolejka zadan (np. arq/celery)
-    zamiast BackgroundTasks.
+    Restart procesu w trakcie ekstrakcji NIE gubi juz zrobionej pracy -
+    `intake.extract_batch` jest wznawialna (commituje kazde rozpoznane
+    zdjecie i kazdy domkniety egzemplarz na biezaco) - traci sie tylko
+    fakt bycia "w toku": `_running` zyje wylacznie w pamieci procesu, wiec
+    po restarcie batch_detail pokaze przycisk "Wznow rozpoznawanie"
+    zamiast paska postepu, dopoki operator go nie kliknie. Docelowo:
+    prawdziwa kolejka zadan (np. arq/celery) zamiast BackgroundTasks, zeby
+    wznowienie bylo automatyczne.
     """
     try:
         async with get_sessionmaker()() as session:
@@ -190,6 +194,7 @@ async def batch_detail(
     extracting = batch_id in _running
     publishing = batch_id in _running_publish
     approved_count = sum(1 for item in items if item.status == "approved")
+    batch_status = await _batch_status(session, batch_id)
     context: dict[str, object] = {
         "batch_id": batch_id,
         "photo_count": photo_count,
@@ -198,15 +203,30 @@ async def batch_detail(
         "extracting": extracting,
         "publishing": publishing,
         "approved_count": approved_count,
+        "batch_status": batch_status,
+        "extraction_error": None,
     }
     if extracting:
         done, total = await intake.extraction_progress(session, batch_id)
         context.update(_progress_context(batch_id, done, total))
+        # Kursor dla pierwszego pollu (partials/batch_progress.html): karty
+        # do tego id sa juz wyrenderowane na stronie (batch_items.html
+        # powyzej) - bez tego pierwszy poling dostalby je jako "nowe" i
+        # dopial drugi raz (patrz batch_extraction_progress/after_item_id).
+        context["last_item_id"] = items[-1].id if items else 0
     elif publishing:
         done, total = await intake.publish_progress(session, batch_id)
         context.update(_progress_context(batch_id, done, total))
-    elif not items and await _batch_status(session, batch_id) == "failed":
-        context["error"] = "Poprzednia proba rozpoznania nie powiodla sie."
+    elif batch_status in ("extracting", "failed"):
+        # 'extracting' bez batch_id w `_running` = proces zostal zabity w
+        # trakcie (restart, OOM) - zaden Python-owy except nie zdazyl
+        # ustawic 'failed'. Wznowienie jest tak samo bezpieczne jak po
+        # czystym bledzie (`intake.extract_batch` jest wznawialna).
+        context["extraction_error"] = (
+            "Rozpoznawanie zostalo przerwane. Wznowienie kontynuuje od "
+            "miejsca przerwania (juz rozpoznane zdjecia i zapisane "
+            "egzemplarze nie zostana utworzone drugi raz)."
+        )
     return templates.TemplateResponse(
         request=request, name="batch_detail.html", context=context
     )
@@ -219,67 +239,79 @@ async def start_extraction(
     background_tasks: BackgroundTasks,
     session: SessionDep,
 ) -> HTMLResponse:
-    """Wystawia zadanie rozpoznania partii w tle i zwraca fragment postepu.
+    """Wystawia (lub wznawia) rozpoznanie partii w tle i zwraca pasek postepu.
 
-    Guard idempotencji: jesli partia ma juz pozycje albo ekstrakcja juz
-    biegnie (`_running`), NIE wystawia drugiego zadania - zwraca biezacy
-    fragment (karty albo pasek postepu), zeby dwuklikniecie/podwojne
-    zdarzenie HTMX nie puscilo rownoleglego przebiegu.
+    Guard idempotencji: TYLKO jesli ekstrakcja tej partii juz biegnie w
+    tym procesie (`_running`) NIE wystawia drugiego zadania - to jedyny
+    warunek, ktory ma teraz znaczenie. `intake.extract_batch` jest
+    wznawialna: ponowne wywolanie na juz ukonczonej albo czesciowo
+    przetworzonej partii jest bezpieczne samo w sobie (pomija zdjecia z
+    wypelnionym ai_raw i egzemplarze juz zapisane), wiec w odroznieniu od
+    poprzedniej (atomowej) wersji nie trzeba juz sprawdzac, czy partia ma
+    juz pozycje.
     """
     items = await intake.list_items(session, batch_id)
-    if items:
-        return templates.TemplateResponse(
-            request=request,
-            name="partials/batch_items.html",
-            context={"items": items, "platforms": await intake.list_platforms(session)},
-        )
+    last_item_id = items[-1].id if items else 0
 
-    done, total = await intake.extraction_progress(session, batch_id)
     if batch_id not in _running:
         _running.add(batch_id)
         background_tasks.add_task(_run_extraction, batch_id)
+    done, total = await intake.extraction_progress(session, batch_id)
+    context = {"last_item_id": last_item_id}
+    context.update(_progress_context(batch_id, done, total))
     return templates.TemplateResponse(
-        request=request,
-        name="partials/batch_progress.html",
-        context=_progress_context(batch_id, done, total),
+        request=request, name="partials/batch_progress.html", context=context
     )
 
 
 @router.get("/batches/{batch_id}/progress", response_class=HTMLResponse)
 async def batch_extraction_progress(
-    request: Request, batch_id: int, session: SessionDep
+    request: Request,
+    batch_id: int,
+    session: SessionDep,
+    after_item_id: int = 0,
 ) -> HTMLResponse:
-    """Fragment polingowany przez HTMX co 2s, dopoki ekstrakcja biegnie.
+    """Fragment polingowany przez HTMX co 2s w trakcie ekstrakcji.
 
-    Zakonczona (pozycje juz istnieja) -> karty pozycji, bez `hx-trigger`,
-    wiec poling zatrzymuje sie sam. Nadal w toku -> pasek postepu z tym
-    samym `hx-get` (poling siebie). Ani jedno, ani drugie (ekstrakcja
-    padla przed utworzeniem pozycji) -> przycisk "Rozpoznaj" z komunikatem
-    bledu.
+    Dopina WYLACZNIE nowo domkniete egzemplarze (id > after_item_id) do
+    #batch-items przez OOB append (`hx-swap-oob="beforeend"` -
+    `partials/batch_items_append.html`) - NIGDY nie przerenderowywuje
+    calej listy, zeby nie skasowac niezapisanej edycji operatora w juz
+    wyswietlonej karcie. Kazda odpowiedz osadza nowy `after_item_id` w
+    `hx-get` kolejnego pollu (`partials/batch_progress.html`), wiec
+    nastepne zapytanie poprosi tylko o pozycje nowsze niz ta juz pokazana.
+
+    Ekstrakcja nadal w toku -> pasek postepu (poling siebie). Zakonczona
+    powodzeniem -> pusty #batch-progress bez `hx-trigger` (poling ustaje,
+    karty zostaja). Zakonczona bledem -> przycisk "Wznow rozpoznawanie"
+    (kontynuuje od miejsca przerwania) z komunikatem bledu.
     """
-    items = await intake.list_items(session, batch_id)
-    if items:
-        return templates.TemplateResponse(
-            request=request,
-            name="partials/batch_items.html",
-            context={"items": items, "platforms": await intake.list_platforms(session)},
-        )
+    new_items = await intake.list_items_after(session, batch_id, after_item_id)
+    context: dict[str, object] = {
+        "batch_id": batch_id,
+        "new_items": new_items,
+        "platforms": await intake.list_platforms(session),
+        "last_item_id": new_items[-1].id if new_items else after_item_id,
+    }
+
     if batch_id in _running:
         done, total = await intake.extraction_progress(session, batch_id)
+        context.update(_progress_context(batch_id, done, total))
         return templates.TemplateResponse(
             request=request,
-            name="partials/batch_progress.html",
-            context=_progress_context(batch_id, done, total),
+            name="partials/batch_extract_poll_running.html",
+            context=context,
         )
-    error = None
-    if await _batch_status(session, batch_id) == "failed":
-        error = (
-            "Rozpoznawanie partii nie powiodlo sie. Sprawdz logi i sprobuj ponownie."
+
+    if await _batch_status(session, batch_id) in ("extracting", "failed"):
+        # patrz analogiczny komentarz w batch_detail o statusie 'extracting'
+        # bez batch_id w `_running` (proces zabity w trakcie).
+        context["extraction_error"] = (
+            "Rozpoznawanie zostalo przerwane. Wznowienie kontynuuje od "
+            "miejsca przerwania."
         )
     return templates.TemplateResponse(
-        request=request,
-        name="partials/batch_extract_button.html",
-        context={"batch_id": batch_id, "error": error},
+        request=request, name="partials/batch_extract_poll_done.html", context=context
     )
 
 

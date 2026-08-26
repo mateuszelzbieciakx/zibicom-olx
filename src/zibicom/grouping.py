@@ -64,6 +64,79 @@ def normalize_title(title: str) -> str:
     return collapsed.lower()
 
 
+class IncrementalGrouper:
+    """Grupuje zdjecia jednej partii w egzemplarze przyrostowo, zdjecie po zdjeciu.
+
+    Rownowaznik `group_photos` dla ekstrakcji przyrostowej (partie
+    zapisywane do intake_item w miare przetwarzania, zamiast dopiero po
+    rozpoznaniu calej partii) - identyczna regula granicy grupy
+    (is_front, z regula zapasowa po tytule - patrz `group_photos`), ale
+    zwraca kazdy domkniety egzemplarz NATYCHMIAST po pojawieniu sie
+    zdjecia, ktore zaczyna kolejna grupe, zamiast czekac na koniec calej
+    partii.
+
+    Stan (biezaca, jeszcze niedomknieta grupa i ostatni znormalizowany
+    tytul) jest prywatny. Przy wznowieniu przerwanej ekstrakcji odtwarza
+    sie go, podajac (`add_photo`) od nowa WSZYSTKIE zdjecia partii w
+    kolejnosci - takze te, ktorych domkniete grupy zostaly juz zapisane w
+    poprzednim przebiegu (wywolujacy po prostu ignoruje zwrocone dla nich
+    `GroupedListing` i nie zapisuje ich drugi raz) - inaczej regula
+    zapasowa po tytule (dla is_front=None) dzialalaby na niepelnej
+    historii i mogla wyznaczyc inna granice niz w pierwszym przebiegu.
+    """
+
+    def __init__(self) -> None:
+        """Inicjuje pusty stan - bez otwartej grupy i bez znanego tytulu."""
+        self._current: list[PhotoExtraction] = []
+        self._last_title_norm: str | None = None
+
+    def add_photo(self, photo: PhotoExtraction) -> GroupedListing | None:
+        """Dolacza kolejne zdjecie i zwraca domkniety egzemplarz, jesli ten je zamknal.
+
+        Args:
+            photo: Wynik rozpoznania kolejnego zdjecia partii, w kolejnosci
+                zrobienia.
+
+        Returns:
+            Scalony POPRZEDNI egzemplarz, jesli to zdjecie zaczyna nowa
+            grupe (samo trafia do nowej, biezacej grupy) - None, gdy
+            dolaczylo do wciaz otwartej grupy (jeszcze nie ma czego
+            zapisywac).
+        """
+        current_title_norm = normalize_title(photo.title) if photo.title else None
+
+        starts_new_group = photo.is_front is True or (
+            photo.is_front is None
+            and current_title_norm is not None
+            and self._last_title_norm is not None
+            and current_title_norm != self._last_title_norm
+        )
+
+        closed = None
+        if starts_new_group and self._current:
+            closed = _merge_group(self._current)
+            self._current = []
+
+        self._current.append(photo)
+        if current_title_norm is not None:
+            self._last_title_norm = current_title_norm
+
+        return closed
+
+    def close(self) -> GroupedListing | None:
+        """Domyka ostatnia, wciaz otwarta grupe (koniec partii).
+
+        Returns:
+            Scalony ostatni egzemplarz, albo None, gdy nie ma otwartej
+            grupy (jeszcze zadne zdjecie nie zostalo podane).
+        """
+        if not self._current:
+            return None
+        closed = _merge_group(self._current)
+        self._current = []
+        return closed
+
+
 def group_photos(extractions: list[PhotoExtraction]) -> list[GroupedListing]:
     """Grupuje kolejne zdjecia jednej partii w egzemplarze.
 
@@ -78,6 +151,10 @@ def group_photos(extractions: list[PhotoExtraction]) -> list[GroupedListing]:
     oznacza nowy egzemplarz. Zdjecie bez tytulu nigdy samo z siebie nie
     zaczyna nowej grupy - dolacza do biezacej.
 
+    Cienka warstwa nad `IncrementalGrouper` (jeden przebieg zamiast
+    zwracania kazdej grupy osobno) - patrz tamten docstring po pelny opis
+    algorytmu.
+
     Args:
         extractions: Wyniki rozpoznania kolejnych zdjec partii, w
             kolejnosci zrobienia (przod, tyl, [wnetrze], ...).
@@ -86,28 +163,16 @@ def group_photos(extractions: list[PhotoExtraction]) -> list[GroupedListing]:
         Lista zgrupowanych egzemplarzy, w kolejnosci wystapienia pierwszego
         zdjecia kazdej grupy. Pusta lista dla pustej partii.
     """
-    groups: list[list[PhotoExtraction]] = []
-    last_title_norm: str | None = None
-
-    for photo in extractions:
-        current_title_norm = normalize_title(photo.title) if photo.title else None
-
-        starts_new_group = photo.is_front is True or (
-            photo.is_front is None
-            and current_title_norm is not None
-            and last_title_norm is not None
-            and current_title_norm != last_title_norm
-        )
-
-        if not groups or starts_new_group:
-            groups.append([photo])
-        else:
-            groups[-1].append(photo)
-
-        if current_title_norm is not None:
-            last_title_norm = current_title_norm
-
-    return [_merge_group(group) for group in groups]
+    grouper = IncrementalGrouper()
+    groups = [
+        closed
+        for photo in extractions
+        if (closed := grouper.add_photo(photo)) is not None
+    ]
+    last = grouper.close()
+    if last is not None:
+        groups.append(last)
+    return groups
 
 
 def _merge_group(photos: list[PhotoExtraction]) -> GroupedListing:

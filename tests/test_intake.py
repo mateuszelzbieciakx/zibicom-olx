@@ -5,7 +5,7 @@ testy celowo NIE mockuja bazy danych (patrz `db_session` w conftest.py).
 """
 
 from decimal import Decimal
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from sqlalchemy import text
@@ -154,6 +154,201 @@ async def test_extract_batch_nieistniejacej_partii_rzuca_not_found(
         await intake.extract_batch(db_session, 999_999)
 
 
+def _extraction(
+    title: str | None,
+    is_front: bool | None,
+    *,
+    price_pln: Decimal | None = Decimal("100"),
+) -> PhotoExtraction:
+    """Buduje wynik rozpoznania do testow ekstrakcji przyrostowej/wznawialnej."""
+    return PhotoExtraction(
+        title=title,
+        platform=PlatformCode.PS4_PS5,
+        price_pln=price_pln,
+        condition="used",
+        is_front=is_front,
+        title_confident=True,
+        price_confident=True,
+    )
+
+
+async def test_extract_batch_domyka_grupy_przyrostowo_przez_cala_partie(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sprawdza domykanie dwoch grup w jednej partii.
+
+    Pierwsza domknieta w trakcie petli (przez kolejny 'przod'), druga
+    dopiero na koncu partii (`IncrementalGrouper.close()`) - obie musza
+    trafic do intake_item z poprawnymi pozycjami. Wznawialnosc przebiegu
+    przerwanego W TRAKCIE (grupa juz zapisana, kolejna jeszcze nie) jest
+    pokryta osobnym testem (`test_extract_batch_wznowienie_nie_duplikuje_pozycji`).
+    """
+    monkeypatch.setattr(intake.photos, "normalize_photo", lambda raw: raw)
+    monkeypatch.setattr(
+        intake.photos, "upload_photo", lambda _: "https://cdn.example.test/x.jpg"
+    )
+    batch_id = await intake.create_batch(
+        db_session, [("1.jpg", b"a"), ("2.jpg", b"b"), ("3.jpg", b"c")]
+    )
+    monkeypatch.setattr(intake.photos, "download_photo", lambda url: b"stub")
+
+    extractions = [
+        _extraction("Bloodborne", True),
+        _extraction(None, False),
+        _extraction("Sekiro", True),
+    ]
+    monkeypatch.setattr(
+        intake.vision, "recognize_photo", lambda raw: extractions.pop(0)
+    )
+
+    await intake.extract_batch(db_session, batch_id)
+
+    items = await intake.list_items(db_session, batch_id)
+    assert len(items) == 2
+    assert [item.title for item in items] == ["Bloodborne", "Sekiro"]
+    assert [item.position for item in items] == [1, 2]
+
+
+async def test_extract_batch_wznowienie_nie_duplikuje_pozycji(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regresja WZNAWIALNOSCI.
+
+    Przerwana partia wznowiona na tej samej partii MUSI pominac zdjecia z
+    wypelnionym ai_raw oraz juz zapisane egzemplarze - inaczej powstaja
+    duplikaty pozycji (podwojne ogloszenia na OLX).
+    """
+    monkeypatch.setattr(intake.photos, "normalize_photo", lambda raw: raw)
+    monkeypatch.setattr(
+        intake.photos, "upload_photo", lambda _: "https://cdn.example.test/x.jpg"
+    )
+    batch_id = await intake.create_batch(
+        db_session,
+        [("1.jpg", b"a"), ("2.jpg", b"b"), ("3.jpg", b"c"), ("4.jpg", b"d")],
+    )
+    monkeypatch.setattr(intake.photos, "download_photo", lambda url: b"stub")
+
+    # Zdjecia 1-3 (domykajace pierwsza grupe: 1=przod, 2=tyl, 3=przod drugiej
+    # gry) rozpoznaja sie poprawnie; 4. zdjecie symuluje przerwanie procesu
+    # (wyczerpany limit Gemini) - PO tym, jak pierwsza grupa zdazyla sie juz
+    # zapisac (domknieta przez zdjecie #3), ale PRZED domknieciem drugiej.
+    first_run = iter(
+        [
+            _extraction("Bloodborne", True),
+            _extraction(None, False),
+            _extraction("Sekiro", True),
+        ]
+    )
+
+    def _recognize_first_run(raw: bytes) -> PhotoExtraction:
+        try:
+            return next(first_run)
+        except StopIteration:
+            raise intake.vision.GeminiQuotaExceededError("limit wyczerpany") from None
+
+    monkeypatch.setattr(intake.vision, "recognize_photo", _recognize_first_run)
+
+    with pytest.raises(intake.IntakeError):
+        await intake.extract_batch(db_session, batch_id)
+
+    items_after_crash = await intake.list_items(db_session, batch_id)
+    assert len(items_after_crash) == 1
+    assert items_after_crash[0].title == "Bloodborne"
+
+    status_after_crash = (
+        await db_session.execute(
+            text("SELECT status::TEXT FROM intake_batch WHERE id = :batch_id"),
+            {"batch_id": batch_id},
+        )
+    ).scalar_one()
+    assert status_after_crash == "failed"
+
+    # Wznowienie: zdjecia 1-3 maja juz wypelniony ai_raw - recognize_photo NIE
+    # powinno byc dla nich wywolane drugi raz, tylko dla zdjecia 4.
+    recognize_calls: list[bytes] = []
+
+    def _recognize_second_run(raw: bytes) -> PhotoExtraction:
+        recognize_calls.append(raw)
+        return _extraction(None, False)
+
+    monkeypatch.setattr(intake.vision, "recognize_photo", _recognize_second_run)
+
+    created = await intake.extract_batch(db_session, batch_id)
+
+    assert created == 1  # tylko nowa pozycja domknieta w TYM przebiegu
+    assert len(recognize_calls) == 1  # tylko zdjecie #4
+
+    items_after_resume = await intake.list_items(db_session, batch_id)
+    assert len(items_after_resume) == 2
+    assert [item.title for item in items_after_resume] == ["Bloodborne", "Sekiro"]
+    assert [item.position for item in items_after_resume] == [1, 2]
+    # Pozycja z pierwszego przebiegu to DOKLADNIE ten sam wiersz (to samo id) -
+    # nie zostala utworzona drugi raz.
+    assert items_after_resume[0].id == items_after_crash[0].id
+
+    status_after_resume = (
+        await db_session.execute(
+            text("SELECT status::TEXT FROM intake_batch WHERE id = :batch_id"),
+            {"batch_id": batch_id},
+        )
+    ).scalar_one()
+    assert status_after_resume == "review"
+
+
+async def test_extract_batch_blad_pojedynczego_zdjecia_nie_przerywa_partii(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sprawdza, ze blad JEDNEGO zdjecia nie przerywa calej partii.
+
+    Blad pobrania/rozpoznania jednego zdjecia (np. R2 niedostepne) nie
+    przerywa calej partii - w odroznieniu od wyczerpania limitu Gemini,
+    ktore jest bledem systemowym.
+    """
+    monkeypatch.setattr(intake.photos, "normalize_photo", lambda raw: raw)
+    monkeypatch.setattr(
+        intake.photos, "upload_photo", lambda _: "https://cdn.example.test/x.jpg"
+    )
+    batch_id = await intake.create_batch(
+        db_session, [("przod.jpg", b"a"), ("tyl.jpg", b"b")]
+    )
+
+    def _download(url: str) -> bytes:
+        raise ValueError("R2 niedostepne")
+
+    monkeypatch.setattr(intake.photos, "download_photo", _download)
+    recognize_photo = Mock(side_effect=AssertionError("nie powinno byc wywolane"))
+    monkeypatch.setattr(intake.vision, "recognize_photo", recognize_photo)
+
+    created = await intake.extract_batch(db_session, batch_id)
+
+    assert created == 1
+    recognize_photo.assert_not_called()
+
+    items = await intake.list_items(db_session, batch_id)
+    assert len(items) == 1
+    assert items[0].title is None
+    assert "brak tytulu" in (items[0].ai_warning or "")
+
+    status = (
+        await db_session.execute(
+            text("SELECT status::TEXT FROM intake_batch WHERE id = :batch_id"),
+            {"batch_id": batch_id},
+        )
+    ).scalar_one()
+    assert status == "review"
+
+    ai_raw_notes = (
+        await db_session.execute(
+            text(
+                "SELECT ai_raw->>'note' FROM intake_photo "
+                "WHERE batch_id = :batch_id ORDER BY position"
+            ),
+            {"batch_id": batch_id},
+        )
+    ).all()
+    assert all("Blad rozpoznania" in row[0] for row in ai_raw_notes)
+
+
 # --------------------------------------------------------------------------
 # list_items
 # --------------------------------------------------------------------------
@@ -164,6 +359,29 @@ async def test_list_items_nieistniejacej_partii_rzuca_not_found(
 ) -> None:
     with pytest.raises(intake.IntakeNotFoundError):
         await intake.list_items(db_session, 999_999)
+
+
+async def test_list_items_after_zwraca_tylko_pozycje_nowsze_niz_id(
+    db_session: AsyncSession,
+) -> None:
+    batch_id, item_1 = await _create_item(db_session, title="Pierwsza")
+    item_2 = await _add_item(db_session, batch_id, 2, status="pending", title="Druga")
+
+    all_items = await intake.list_items_after(db_session, batch_id, 0)
+    assert [item.id for item in all_items] == [item_1, item_2]
+
+    newer_only = await intake.list_items_after(db_session, batch_id, item_1)
+    assert [item.id for item in newer_only] == [item_2]
+
+    none_newer = await intake.list_items_after(db_session, batch_id, item_2)
+    assert none_newer == []
+
+
+async def test_list_items_after_nieistniejacej_partii_rzuca_not_found(
+    db_session: AsyncSession,
+) -> None:
+    with pytest.raises(intake.IntakeNotFoundError):
+        await intake.list_items_after(db_session, 999_999, 0)
 
 
 # --------------------------------------------------------------------------
