@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Partia {{ batch_id }}{% endblock %}
 {% block content %}
+<a class="text-blue-600 hover:underline text-sm" href="/ui/batches">&larr; Partie</a>
 <h1 class="text-xl font-semibold mb-4">Partia {{ batch_id }}</h1>
 {% if not items %}
 <p class="text-slate-500">Brak pozycji. Uruchom ekstrakcje dla tej partii.</p>

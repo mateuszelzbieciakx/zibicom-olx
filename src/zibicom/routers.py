@@ -177,6 +177,16 @@ async def create_batch(
     return BatchCreateResponse(batch_id=batch_id, photo_count=len(payload))
 
 
+@router.get(
+    "/api/intake/batches",
+    response_model=list[intake.BatchView],
+    tags=["intake"],
+)
+async def list_batches(session: SessionDep) -> list[intake.BatchView]:
+    """Zwraca wszystkie partie poczekalni, od najnowszej."""
+    return await intake.list_batches(session)
+
+
 @router.post(
     "/api/intake/batches/{batch_id}/extract",
     response_model=ExtractResponse,

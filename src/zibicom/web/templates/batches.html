@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Partie{% endblock %}
+{% block content %}
+<h1 class="text-xl font-semibold mb-4">Partie</h1>
+{% if not batches %}
+<p class="text-slate-500">Brak partii. Wgraj zdjecia, zeby utworzyc pierwsza.</p>
+{% else %}
+<table class="w-full text-left border-collapse">
+    <thead>
+        <tr class="border-b text-sm text-slate-500">
+            <th class="py-2 pr-4">ID</th>
+            <th class="py-2 pr-4">Data</th>
+            <th class="py-2 pr-4">Zdjecia</th>
+            <th class="py-2 pr-4">Pozycje</th>
+            <th class="py-2 pr-4">Statusy</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for batch in batches %}
+        <tr class="border-b hover:bg-slate-100">
+            <td class="py-2 pr-4">
+                <a class="text-blue-600 hover:underline" href="/ui/batches/{{ batch.id }}">#{{ batch.id }}</a>
+            </td>
+            <td class="py-2 pr-4">{{ batch.created_at }}</td>
+            <td class="py-2 pr-4">{{ batch.photo_count }}</td>
+            <td class="py-2 pr-4">{{ batch.item_count }}</td>
+            <td class="py-2 pr-4">
+                {% if not batch.status_counts %}
+                <span class="text-slate-400">&mdash;</span>
+                {% else %}
+                {% for status, count in batch.status_counts.items() %}
+                <span class="inline-block rounded bg-slate-200 px-2 py-0.5 text-sm mr-1">{{ status }}: {{ count }}</span>
+                {% endfor %}
+                {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+{% endblock %}

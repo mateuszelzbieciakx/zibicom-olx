@@ -54,6 +54,16 @@ async def _card(
     )
 
 
+@router.get("/batches", response_class=HTMLResponse)
+async def batches(request: Request, session: SessionDep) -> HTMLResponse:
+    """Renderuje liste wszystkich partii, od najnowszej."""
+    return templates.TemplateResponse(
+        request=request,
+        name="batches.html",
+        context={"batches": await intake.list_batches(session)},
+    )
+
+
 @router.get("/batches/{batch_id}", response_class=HTMLResponse)
 async def batch_detail(
     request: Request, batch_id: int, session: SessionDep

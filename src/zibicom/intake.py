@@ -133,6 +133,26 @@ class IntakeItemUpdate(BaseModel):
         return value
 
 
+class BatchView(BaseModel):
+    """Wpis partii do listy na ekranie `/ui/batches`.
+
+    Attributes:
+        id: Identyfikator partii.
+        created_at: Moment utworzenia partii.
+        photo_count: Liczba zdjec wgranych w partii.
+        item_count: Liczba pozycji utworzonych przez `extract_batch`.
+        status_counts: Rozbicie pozycji wg `intake_item.status`
+            (np. {"pending": 3, "published": 1}) - statusy bez zadnej
+            pozycji w tej partii sa pominiete.
+    """
+
+    id: int
+    created_at: datetime
+    photo_count: int
+    item_count: int
+    status_counts: dict[str, int]
+
+
 class ListingStatusView(BaseModel):
     """Stan oferty po synchronizacji z OLX (`sync_advert_status`).
 
@@ -449,6 +469,60 @@ async def extract_batch(session: AsyncSession, batch_id: int) -> int:
 
     await session.commit()
     return created
+
+
+async def list_batches(session: AsyncSession) -> list[BatchView]:
+    """Zwraca wszystkie partie do ekranu listy, od najnowszej.
+
+    Jedno zapytanie SQL: liczba zdjec i liczba pozycji sa policzone w
+    podzapytaniach zgrupowanych po `batch_id` (a nie przez bezposredni JOIN
+    intake_photo + intake_item do intake_batch), zeby nie mnozyc wierszy
+    iloczynem kartezjanskim zdjec i pozycji tej samej partii. Rozbicie wg
+    statusu pozycji jest agregowane do jsonb (`jsonb_object_agg`) w kolejnym
+    podzapytaniu - bez zadnego zapytania w petli po partiach (N+1).
+
+    Args:
+        session: Sesja bazy danych.
+
+    Returns:
+        Partie posortowane malejaco wg id (najnowsza pierwsza).
+    """
+    rows = (
+        await session.execute(
+            text(
+                """
+                SELECT
+                    b.id,
+                    b.created_at,
+                    COALESCE(ph.photo_count, 0) AS photo_count,
+                    COALESCE(it.item_count, 0) AS item_count,
+                    COALESCE(sc.status_counts, '{}'::jsonb) AS status_counts
+                FROM intake_batch b
+                LEFT JOIN (
+                    SELECT batch_id, COUNT(*) AS photo_count
+                    FROM intake_photo
+                    GROUP BY batch_id
+                ) ph ON ph.batch_id = b.id
+                LEFT JOIN (
+                    SELECT batch_id, COUNT(*) AS item_count
+                    FROM intake_item
+                    GROUP BY batch_id
+                ) it ON it.batch_id = b.id
+                LEFT JOIN (
+                    SELECT batch_id, jsonb_object_agg(status, cnt) AS status_counts
+                    FROM (
+                        SELECT batch_id, status::TEXT AS status, COUNT(*) AS cnt
+                        FROM intake_item
+                        GROUP BY batch_id, status
+                    ) per_status
+                    GROUP BY batch_id
+                ) sc ON sc.batch_id = b.id
+                ORDER BY b.id DESC
+                """
+            )
+        )
+    ).all()
+    return [BatchView(**row._mapping) for row in rows]
 
 
 async def list_items(session: AsyncSession, batch_id: int) -> list[IntakeItemView]:
