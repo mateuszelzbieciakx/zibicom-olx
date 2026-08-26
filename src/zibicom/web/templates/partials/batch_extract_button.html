@@ -1,0 +1,14 @@
+<div id="batch-items">
+    {% if error %}
+    <div class="text-sm rounded bg-red-50 border border-red-300 text-red-800 px-2 py-1 mb-3">
+        {{ error }}
+    </div>
+    {% endif %}
+    <button type="button"
+            hx-post="/ui/batches/{{ batch_id }}/extract"
+            hx-target="#batch-items"
+            hx-swap="outerHTML"
+            class="px-3 py-1 bg-slate-800 text-white rounded text-sm">
+        Rozpoznaj
+    </button>
+</div>

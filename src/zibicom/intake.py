@@ -409,6 +409,12 @@ async def extract_batch(session: AsyncSession, batch_id: int) -> int:
                     "ai_raw": json.dumps(extraction.model_dump(mode="json")),
                 },
             )
+            # Commit per zdjecie (nie tylko na koncu funkcji): ekstrakcja duzej
+            # partii trwa minuty i biegnie w tle na wlasnej sesji, a operator
+            # sledzi postep przez `extraction_progress` z zupelnie innej sesji/
+            # transakcji - bez tego commita nie widzialaby zadnego wiersza z
+            # wypelnionym ai_raw, dopoki caly przebieg by sie nie skonczyl.
+            await session.commit()
             extractions.append(extraction)
 
         groups = grouping.group_photos(extractions)
@@ -469,6 +475,33 @@ async def extract_batch(session: AsyncSession, batch_id: int) -> int:
 
     await session.commit()
     return created
+
+
+async def extraction_progress(session: AsyncSession, batch_id: int) -> tuple[int, int]:
+    """Zwraca postep ekstrakcji partii do paska postepu na `/ui`.
+
+    Wywolywane z osobnej sesji/transakcji niz ta, w ktorej biegnie
+    `extract_batch` w tle - dziala tylko dzieki temu, ze `extract_batch`
+    commituje `ai_raw` per zdjecie, a nie raz na koniec.
+
+    Args:
+        session: Sesja bazy danych.
+        batch_id: Identyfikator partii.
+
+    Returns:
+        Krotke (przetworzone, wszystkie): liczba zdjec z wypelnionym
+        `ai_raw` i liczba wszystkich zdjec partii.
+    """
+    row = (
+        await session.execute(
+            text(
+                "SELECT count(*) FILTER (WHERE ai_raw IS NOT NULL), count(*) "
+                "FROM intake_photo WHERE batch_id = :batch_id"
+            ),
+            {"batch_id": batch_id},
+        )
+    ).one()
+    return row[0], row[1]
 
 
 async def list_batches(session: AsyncSession) -> list[BatchView]:
@@ -1273,9 +1306,7 @@ async def sync_pending_listings(
         except Exception:
             # Log obowiazkowy - cicha obsluga bledu ukrylaby blad konfiguracji
             # (wygasly token, zmiana API) jako "nic sie nie stalo".
-            logger.exception(
-                "Nie udalo sie zsynchronizowac listingu %s.", listing_id
-            )
+            logger.exception("Nie udalo sie zsynchronizowac listingu %s.", listing_id)
             failed += 1
             continue
 

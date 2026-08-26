@@ -6,23 +6,30 @@ inna reprezentacja. Logika biznesowa nie moze istniec w dwoch kopiach.
 
 from __future__ import annotations
 
+import logging
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from zibicom import intake, olx
-from zibicom.db import get_session
+from zibicom.db import get_session, get_sessionmaker
 
 router = APIRouter(prefix="/ui", tags=["ui"])
 templates = Jinja2Templates(directory=Path(__file__).parent / "templates")
+logger = logging.getLogger(__name__)
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
+
+# Partie, ktorych ekstrakcja aktualnie biegnie w tle (guard idempotencji dla
+# POST /batches/{id}/extract - zyje tylko w pamieci procesu, patrz komentarz
+# przy _run_extraction o utracie postepu przy restarcie).
+_running: set[int] = set()
 
 
 async def _card(
@@ -53,6 +60,46 @@ async def _card(
             "platforms": await intake.list_platforms(session),
         },
     )
+
+
+def _progress_context(batch_id: int, done: int, total: int) -> dict[str, object]:
+    """Buduje kontekst dla `partials/batch_progress.html`."""
+    return {
+        "batch_id": batch_id,
+        "done": done,
+        "total": total,
+        "percent": round(done / total * 100) if total else 0,
+    }
+
+
+async def _batch_status(session: AsyncSession, batch_id: int) -> str:
+    """Zwraca surowy status partii (`intake_batch.status`)."""
+    return (
+        await session.execute(
+            text("SELECT status::TEXT FROM intake_batch WHERE id = :batch_id"),
+            {"batch_id": batch_id},
+        )
+    ).scalar_one()
+
+
+async def _run_extraction(batch_id: int) -> None:
+    """Uruchamia `extract_batch` w tle, na wlasnej sesji DB.
+
+    Wlasna sesja, bo ta z zadania HTTP jest zamykana, gdy tylko odpowiedz
+    zostanie wyslana - `extract_batch` musi dzialac dlugo po tym momencie.
+
+    Ograniczenie zaakceptowane dla jednego operatora: restart procesu w
+    trakcie ekstrakcji gubi jej postep (brak trwalej kolejki zadan - `_running`
+    zyje tylko w pamieci). Docelowo: prawdziwa kolejka zadan (np. arq/celery)
+    zamiast BackgroundTasks.
+    """
+    try:
+        async with get_sessionmaker()() as session:
+            await intake.extract_batch(session, batch_id)
+    except Exception:
+        logger.exception("Ekstrakcja partii %s w tle nie powiodla sie.", batch_id)
+    finally:
+        _running.discard(batch_id)
 
 
 @router.get("/batches", response_class=HTMLResponse)
@@ -104,15 +151,93 @@ async def batch_detail(
             {"batch_id": batch_id},
         )
     ).scalar_one()
+    items = await intake.list_items(session, batch_id)
+    extracting = batch_id in _running
+    context: dict[str, object] = {
+        "batch_id": batch_id,
+        "photo_count": photo_count,
+        "items": items,
+        "platforms": await intake.list_platforms(session),
+        "extracting": extracting,
+    }
+    if extracting:
+        done, total = await intake.extraction_progress(session, batch_id)
+        context.update(_progress_context(batch_id, done, total))
+    elif not items and await _batch_status(session, batch_id) == "failed":
+        context["error"] = "Poprzednia proba rozpoznania nie powiodla sie."
+    return templates.TemplateResponse(
+        request=request, name="batch_detail.html", context=context
+    )
+
+
+@router.post("/batches/{batch_id}/extract", response_class=HTMLResponse)
+async def start_extraction(
+    request: Request,
+    batch_id: int,
+    background_tasks: BackgroundTasks,
+    session: SessionDep,
+) -> HTMLResponse:
+    """Wystawia zadanie rozpoznania partii w tle i zwraca fragment postepu.
+
+    Guard idempotencji: jesli partia ma juz pozycje albo ekstrakcja juz
+    biegnie (`_running`), NIE wystawia drugiego zadania - zwraca biezacy
+    fragment (karty albo pasek postepu), zeby dwuklikniecie/podwojne
+    zdarzenie HTMX nie puscilo rownoleglego przebiegu.
+    """
+    items = await intake.list_items(session, batch_id)
+    if items:
+        return templates.TemplateResponse(
+            request=request,
+            name="partials/batch_items.html",
+            context={"items": items, "platforms": await intake.list_platforms(session)},
+        )
+
+    done, total = await intake.extraction_progress(session, batch_id)
+    if batch_id not in _running:
+        _running.add(batch_id)
+        background_tasks.add_task(_run_extraction, batch_id)
     return templates.TemplateResponse(
         request=request,
-        name="batch_detail.html",
-        context={
-            "batch_id": batch_id,
-            "photo_count": photo_count,
-            "items": await intake.list_items(session, batch_id),
-            "platforms": await intake.list_platforms(session),
-        },
+        name="partials/batch_progress.html",
+        context=_progress_context(batch_id, done, total),
+    )
+
+
+@router.get("/batches/{batch_id}/progress", response_class=HTMLResponse)
+async def batch_extraction_progress(
+    request: Request, batch_id: int, session: SessionDep
+) -> HTMLResponse:
+    """Fragment polingowany przez HTMX co 2s, dopoki ekstrakcja biegnie.
+
+    Zakonczona (pozycje juz istnieja) -> karty pozycji, bez `hx-trigger`,
+    wiec poling zatrzymuje sie sam. Nadal w toku -> pasek postepu z tym
+    samym `hx-get` (poling siebie). Ani jedno, ani drugie (ekstrakcja
+    padla przed utworzeniem pozycji) -> przycisk "Rozpoznaj" z komunikatem
+    bledu.
+    """
+    items = await intake.list_items(session, batch_id)
+    if items:
+        return templates.TemplateResponse(
+            request=request,
+            name="partials/batch_items.html",
+            context={"items": items, "platforms": await intake.list_platforms(session)},
+        )
+    if batch_id in _running:
+        done, total = await intake.extraction_progress(session, batch_id)
+        return templates.TemplateResponse(
+            request=request,
+            name="partials/batch_progress.html",
+            context=_progress_context(batch_id, done, total),
+        )
+    error = None
+    if await _batch_status(session, batch_id) == "failed":
+        error = (
+            "Rozpoznawanie partii nie powiodlo sie. Sprawdz logi i sprobuj ponownie."
+        )
+    return templates.TemplateResponse(
+        request=request,
+        name="partials/batch_extract_button.html",
+        context={"batch_id": batch_id, "error": error},
     )
 
 

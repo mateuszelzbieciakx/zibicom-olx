@@ -1,0 +1,9 @@
+<div id="batch-items"
+     hx-get="/ui/batches/{{ batch_id }}/progress"
+     hx-trigger="every 2s"
+     hx-swap="outerHTML">
+    <div class="text-sm text-slate-500 mb-1">Rozpoznawanie zdjec... {{ done }}/{{ total }}</div>
+    <div class="w-full bg-slate-200 rounded h-2 overflow-hidden">
+        <div class="bg-slate-800 h-2" style="width: {{ percent }}%"></div>
+    </div>
+</div>

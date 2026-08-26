@@ -4,8 +4,12 @@
 <a class="text-blue-600 hover:underline text-sm" href="/ui/batches">&larr; Partie</a>
 <h1 class="text-xl font-semibold mb-1">Partia {{ batch_id }}</h1>
 <p class="text-sm text-slate-500 mb-4">{{ photo_count }} zdjec</p>
-{% if not items %}
-<p class="text-slate-500">Brak pozycji. Uruchom ekstrakcje dla tej partii.</p>
+
+{% if items %}
+{% include "partials/batch_items.html" %}
+{% elif extracting %}
+{% include "partials/batch_progress.html" %}
+{% else %}
+{% include "partials/batch_extract_button.html" %}
 {% endif %}
-{% for item in items %}{% include "partials/item_card.html" %}{% endfor %}
 {% endblock %}
