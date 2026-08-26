@@ -5,8 +5,8 @@ z ogłoszeniami na OLX.
 
 Stan: **schemat bazy + warstwa poczekalni (upload, rozpoznanie AI, ręczne
 zatwierdzanie) + integracja z OLX Partner API (autoryzacja, publikacja
-zatwierdzonych pozycji)**. FIFO przy sprzedaży stacjonarnej jeszcze nie
-istnieje.
+zatwierdzonych pozycji) + interfejs WWW (`/ui/batches`, patrz „Interfejs
+WWW" niżej)**. FIFO przy sprzedaży stacjonarnej jeszcze nie istnieje.
 
 ## Stack
 
@@ -38,6 +38,9 @@ src/zibicom/
   crypto.py            szyfrowanie tokenów OLX kluczem Fernet
   olx.py               integracja z OLX Partner API: autoryzacja (OAuth
                         półręczny), odświeżanie tokenu, publikacja ogłoszeń
+  web/routes.py        interfejs WWW (HTMX + Jinja2) pod `/ui/...` — wywołuje
+                        te same funkcje serwisowe co routers.py, inna reprezentacja
+  web/templates/       szablony Jinja2 (strony i fragmenty HTMX)
 tests/                 pytest, fixtures w conftest.py
 secrets/               pliki sekretów (ignorowane przez git)
 ```
@@ -204,6 +207,30 @@ Trzeba więc: otworzyć URL z `/api/olx/authorize`, zalogować się, przepisać
 parametr `code` z paska adresu po przekierowaniu i przesłać go przez
 `/api/olx/exchange`. Publikacja partii hurtem świadomie nie istnieje na tym
 etapie — `/api/intake/items/{id}/publish` publikuje jedną pozycję na raz.
+
+## Interfejs WWW
+
+Pod `/ui/batches` działa prosty interfejs pracy dla operatora (HTMX + Jinja2,
+`src/zibicom/web/`) — równoległy do JSON API powyżej, wywołujący te same
+funkcje serwisowe w `intake.py` (logika biznesowa nie istnieje w dwóch
+kopiach). Pętla przyjęcia towaru:
+
+1. **`/ui/batches`** — lista partii + formularz uploadu zdjęć (zwykły
+   multipart POST, post-redirect-get: sukces przekierowuje na
+   `/ui/batches/{id}`, żeby odświeżenie strony nie powtórzyło wgrywania).
+2. **„Rozpoznaj"** na stronie partii startuje rozpoznanie AI w tle
+   (`BackgroundTasks`) i pokazuje pasek postępu, który HTMX odpytuje co 2
+   sekundy (`GET /ui/batches/{id}/progress`), aż pojawią się karty pozycji.
+3. **Karty pozycji** pozwalają poprawić tytuł/cenę/stan/platformę
+   („Zapisz"), a następnie **zatwierdzić** albo **odrzucić** pozycję.
+4. Zatwierdzona pozycja odsłania przycisk **„Publikuj"** — publikacja na OLX
+   jest nieodwracalna (prawdziwe ogłoszenie, brak środowiska testowego OLX),
+   więc wymaga świadomej decyzji operatora, potwierdzonej dodatkowym
+   `hx-confirm` w przeglądarce.
+
+Nagłówek strony ma też przycisk „Odśwież statusy OLX"
+(`POST /ui/listings/sync-pending`) — odpytuje OLX dla ofert czekających na
+aktywację i aktualizuje ich status lokalnie.
 
 Kolekcja Postman z endpointami poczekalni, w kolejności workflow, jest
 w `postman/zibicom-olx.postman_collection.json`.

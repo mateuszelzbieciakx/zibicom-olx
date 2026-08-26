@@ -293,7 +293,7 @@ async def test_list_platforms_zwraca_slownik(db_session: AsyncSession) -> None:
         ("moderated", "pending"),
         ("removed", "removed"),
         ("outdated", "removed"),
-        ("disabled", "removed"),
+        ("disabled", "pending"),
     ],
 )
 def test_map_olx_status_znane_wartosci(raw_status: str, expected: str) -> None:

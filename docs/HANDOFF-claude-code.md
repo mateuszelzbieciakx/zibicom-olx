@@ -25,11 +25,15 @@ poprawny `status='active'`. Endpoint `GET /api/intake/items/{id}/publish/preview
 zbudować dokładny payload OLX bez publikacji — przydatne do diagnozowania błędów walidacji bez
 zużywania kolejnej próby.
 
+Interfejs WWW pod `/ui/batches` (HTMX + Jinja2, `src/zibicom/web/`) też istnieje i jest
+zweryfikowany end-to-end na czystej bazie: upload zdjęć (post-redirect-get) → „Rozpoznaj"
+(ekstrakcja w tle przez `BackgroundTasks`, pasek postępu odpytywany co 2s) → korekta pól karty
+pozycji → zatwierdzenie. Publikacja z UI istnieje (przycisk „Publikuj" z `hx-confirm`, bo
+nieodwracalna), ale świadomie nie jest ćwiczona przy każdym smoke teście — patrz README, sekcja
+„Interfejs WWW". Jest też przycisk „Odśwież statusy OLX" w nagłówku (`sync_pending_listings`).
+
 ### Co zostało do zrobienia
 
-- **Interfejs HTMX.** Nie istnieje w ogóle — zero szablonów, plików statycznych, jakiegokolwiek
-  kodu HTMX/Jinja. Cała aplikacja to obecnie czysty JSON API (FastAPI + Postman collection w
-  `postman/`). Ktoś musi zbudować UI od zera.
 - **Logika sprzedaży / FIFO w praktyce.** Tabela `sale_event` i indeks `listing_fifo_idx`
   (`WHERE status = 'active'`) istnieją w schemacie od migracji 0001 i **teraz faktycznie
   działają** (status `'active'` jest poprawnie mapowany i synchronizowany — patrz sekcja o
