@@ -1228,3 +1228,23 @@ async def sync_pending_listings(
         terminal=terminal,
         failed=failed,
     )
+
+
+async def get_item(session: AsyncSession, item_id: int) -> IntakeItemView:
+    """Zwraca widok pojedynczej pozycji poczekalni.
+
+    Publiczny odpowiednik `_get_item_view` - warstwa prezentacji potrzebuje
+    odczytac stan pozycji po nieudanej operacji, zeby przerenderowac karte
+    z komunikatem bledu.
+
+    Args:
+        session: Sesja bazy danych.
+        item_id: Identyfikator pozycji.
+
+    Returns:
+        Widok pozycji.
+
+    Raises:
+        IntakeNotFoundError: Gdy pozycja nie istnieje.
+    """
+    return await _get_item_view(session, item_id)
