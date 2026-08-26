@@ -10,9 +10,10 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Form, Request
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from zibicom import intake, olx
@@ -64,16 +65,51 @@ async def batches(request: Request, session: SessionDep) -> HTMLResponse:
     )
 
 
+@router.post("/batches")
+async def create_batch(
+    request: Request,
+    session: SessionDep,
+    files: Annotated[
+        list[UploadFile], File(description="Zdjecia w kolejnosci wgrania.")
+    ],
+) -> HTMLResponse:
+    """Tworzy nowa partie z plikow wgranych przez formularz w przegladarce.
+
+    Zwykly POST/Redirect/Get (bez HTMX): po sukcesie 303 See Other na
+    `/ui/batches/{batch_id}`, zeby odswiezenie strony nie powtorzylo uploadu
+    (307 by to zrobilo). Blad domenowy re-renderuje liste partii z
+    komunikatem, statusem 200 - nie ma dokad przekierowac, bo partia nie
+    powstala.
+    """
+    payload = [(f.filename, await f.read()) for f in files]
+    try:
+        batch_id = await intake.create_batch(session, payload)
+    except intake.IntakeError as exc:
+        return templates.TemplateResponse(
+            request=request,
+            name="batches.html",
+            context={"batches": await intake.list_batches(session), "error": str(exc)},
+        )
+    return RedirectResponse(f"/ui/batches/{batch_id}", status_code=303)
+
+
 @router.get("/batches/{batch_id}", response_class=HTMLResponse)
 async def batch_detail(
     request: Request, batch_id: int, session: SessionDep
 ) -> HTMLResponse:
     """Renderuje pozycje poczekalni dla wskazanej partii."""
+    photo_count = (
+        await session.execute(
+            text("SELECT COUNT(*) FROM intake_photo WHERE batch_id = :batch_id"),
+            {"batch_id": batch_id},
+        )
+    ).scalar_one()
     return templates.TemplateResponse(
         request=request,
         name="batch_detail.html",
         context={
             "batch_id": batch_id,
+            "photo_count": photo_count,
             "items": await intake.list_items(session, batch_id),
             "platforms": await intake.list_platforms(session),
         },
