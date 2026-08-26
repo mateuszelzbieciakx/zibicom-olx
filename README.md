@@ -1,130 +1,164 @@
 # zibicom-olx
 
-Narzędzie do synchronizacji inwentarza sklepu z grami wideo (zibicom)
-z ogłoszeniami na OLX.
+Synchronizacja inwentarza sklepu z grami wideo (zibicom, Kraków) z ogłoszeniami
+na OLX. Zdjęcia pudełek trafiają do rozpoznania AI, człowiek weryfikuje wynik,
+zatwierdzone pozycje lądują na OLX przez Partner API.
 
-Stan: **schemat bazy + warstwa poczekalni (upload, rozpoznanie AI, ręczne
-zatwierdzanie) + integracja z OLX Partner API (autoryzacja, publikacja
-zatwierdzonych pozycji) + interfejs WWW (`/ui/batches`, patrz „Interfejs
-WWW" niżej)**. FIFO przy sprzedaży stacjonarnej jeszcze nie istnieje.
+Aplikacja publikuje prawdziwe ogłoszenia na produkcyjnym koncie firmowym —
+OLX nie udostępnia środowiska testowego.
+
+## Co działa
+
+- Pełna pętla przyjęcia towaru w przeglądarce: upload zdjęć → rozpoznanie AI
+  w tle → korekta i zatwierdzenie → publikacja na OLX → promocja do tabel
+  produkcyjnych.
+- Autoryzacja OAuth do OLX z automatycznym odświeżaniem rotującego tokenu.
+- Reconciler statusów — OLX aktywuje ogłoszenia asynchronicznie, więc status
+  zapisany w chwili publikacji trzeba dosynchronizować.
+- JSON API równoległe do interfejsu WWW (te same funkcje serwisowe).
+
+## Czego nie ma
+
+- **Sprzedaż FIFO.** Schemat (`sale_event`) i indeks `listing_fifo_idx`
+  istnieją od migracji 0001, brak kodu aplikacyjnego zdejmującego najstarsze
+  ogłoszenie przy sprzedaży stacjonarnej.
+- **Import istniejących ogłoszeń.** Sklep ma ~1500 ofert wystawionych poza tą
+  aplikacją; nie są zmapowane na `game`/`listing`.
+- **Katalog EAN.** Kolumna `game.ean` istnieje, ale nie jest używana.
+- **Edycja opublikowanych ogłoszeń** (`PUT /adverts` wymaga pełnego payloadu).
+- **Uwierzytelnianie panelu** — interfejs zakłada zaufaną sieć lokalną.
+- Harmonogram dla reconcilera (wywoływany przyciskiem w GUI).
 
 ## Stack
 
-| Element        | Wersja                          |
-| -------------- | ------------------------------- |
-| Python         | 3.14                            |
-| Menedżer paczek| uv (nigdy pip)                  |
-| API            | FastAPI + uvicorn               |
-| Baza           | PostgreSQL 18                   |
-| ORM            | SQLAlchemy 2.0 + psycopg 3      |
-| Testy / lint   | pytest, ruff (line-length 88)   |
+| Element | Wersja |
+| --- | --- |
+| Python | 3.14 |
+| Menedżer paczek | uv (nigdy pip) |
+| API | FastAPI + uvicorn |
+| Frontend | Jinja2 + HTMX + Tailwind (CDN) |
+| Baza | PostgreSQL 18 |
+| ORM | SQLAlchemy 2.0 + psycopg 3 |
+| Rozpoznanie obrazu | Gemini |
+| Hosting zdjęć | Cloudflare R2 (S3-compatible) |
+| Testy / lint | pytest, ruff (line-length 88) |
 
-## Układ repozytorium
+## Uruchomienie
 
-```
-migrations/            numerowane migracje SQL (0001_..., 0002_..., 0003_..., 0004_...)
-postman/               kolekcja Postman do endpointów poczekalni
-src/zibicom/
-  config.py            pydantic-settings: /run/secrets + .env
-  db.py                silnik i sesje SQLAlchemy
-  main.py              FastAPI, /health, podpięcie routerów
-  routers.py           endpointy HTTP warstwy poczekalni (intake) i OLX
-  intake.py            logika poczekalni: upload, rozpoznanie AI, zatwierdzanie,
-                        publikacja (promocja do game/listing/listing_photo)
-  photos.py            normalizacja zdjęć oraz upload/download/delete w R2
-  vision.py            rozpoznawanie egzemplarzy na zdjęciach przez Gemini
-  grouping.py          grupowanie rozpoznanych zdjęć w egzemplarze
-  models.py            modele Pydantic wyniku rozpoznania AI
-  crypto.py            szyfrowanie tokenów OLX kluczem Fernet
-  olx.py               integracja z OLX Partner API: autoryzacja (OAuth
-                        półręczny), odświeżanie tokenu, publikacja ogłoszeń
-  web/routes.py        interfejs WWW (HTMX + Jinja2) pod `/ui/...` — wywołuje
-                        te same funkcje serwisowe co routers.py, inna reprezentacja
-  web/templates/       szablony Jinja2 (strony i fragmenty HTMX)
-tests/                 pytest, fixtures w conftest.py
-secrets/               pliki sekretów (ignorowane przez git)
-```
-
-## Konfiguracja i sekrety
-
-`Settings` czyta z trzech źródeł, w kolejności ważności:
-
-1. zmienne środowiskowe,
-2. plik `.env` (lokalny development na Windowsie),
-3. pliki w `/run/secrets` (Docker Secrets na VPS).
-
-Nazwa pliku sekretu odpowiada nazwie pola, więc `secrets/postgres_password.txt`
-trafia do kontenera jako `/run/secrets/postgres_password` i zasila pole
-`postgres_password`. Ten sam plik obsługuje bazę przez `POSTGRES_PASSWORD_FILE`,
-dzięki czemu hasło nie pojawia się w żadnej zmiennej środowiskowej.
-
-Katalog `/run/secrets` jest wykrywany dynamicznie — poza Dockerem po prostu nie
-istnieje i pydantic-settings go pomija.
-
-### Start lokalny (Windows)
-
-```powershell
-uv sync
-Copy-Item .env.example .env    # uzupełnij hasło
-uv run python -m zibicom
-```
-
-> **Dlaczego `python -m zibicom`, a nie `uvicorn ...`?**
-> psycopg 3 nie potrafi pracować na `ProactorEventLoop`, który uvicorn wybiera
-> domyślnie na Windowsie (`InterfaceError: Psycopg cannot use the
-> 'ProactorEventLoop'`). `src/zibicom/__main__.py` wymusza `SelectorEventLoop`
-> przez `loop_factory` — bez sięgania po API polityk pętli, które znika
-> w Pythonie 3.16. Na Linuksie zachowanie jest niezmienione, więc kontener
-> używa tego samego wejścia.
-> Ta sama pułapka dotknie testy integracyjne z bazą na Windowsie — będą
-> potrzebowały pętli selektorowej (fixture w `conftest.py`).
-
-### Start w Dockerze (VPS)
+Środowisko robocze: macOS (Apple Silicon), Docker Desktop.
 
 ```bash
+uv sync
+cp .env.example .env                  # uzupełnij wartości
 mkdir -p secrets
 printf '%s' 'silne-haslo' > secrets/postgres_password.txt
 chmod 600 secrets/postgres_password.txt
+
+docker compose up -d db
+uv run uvicorn zibicom.main:app --reload
+```
+
+Interfejs: <http://localhost:8000/ui/batches>
+
+Przy pierwszym uruchomieniu i po miesiącu bez użycia trzeba odnowić
+autoryzację OLX (patrz „Autoryzacja OLX").
+
+### Docker (VPS)
+
+```bash
 docker compose up -d --build
 ```
 
-Migracje z `migrations/` są montowane w `/docker-entrypoint-initdb.d` i wykonują
-się alfabetycznie **przy pierwszej inicjalizacji** wolumenu bazy. Kolejne pliki
-(`0002_...`) na istniejącej bazie trzeba puścić ręcznie:
+Migracje z `migrations/` montują się w `/docker-entrypoint-initdb.d` i wykonują
+alfabetycznie **przy pierwszej inicjalizacji wolumenu**. Nową migrację na
+istniejącej bazie trzeba puścić ręcznie:
 
 ```bash
-docker compose exec -T db psql -U zibicom -d zibicom -v ON_ERROR_STOP=1 < migrations/0004_olx_token.sql
+docker compose exec -T db psql -U zibicom -d zibicom -v ON_ERROR_STOP=1 \
+    < migrations/0006_olx_attribute_mapping.sql
 ```
 
 Wolumen danych montowany jest na `/var/lib/postgresql` — Postgres 18 zmienił
 układ katalogów względem wcześniejszych wersji.
 
+### Windows
+
+Wirtualizacja jest zablokowana na maszynie deweloperskiej (`HypervisorPresent`
+pozostaje `False` mimo spełnionych wymagań Hyper-V) — Docker tam nie startuje,
+problem nierozwiązany. Aplikację można uruchomić bez kontenera przez
+`uv run python -m zibicom`, ale baza nadal wymaga Postgresa z innego źródła.
+
+Osobne wejście `__main__.py` istnieje, bo psycopg 3 nie działa na
+`ProactorEventLoop`, który uvicorn wybiera domyślnie na Windowsie
+(`InterfaceError: Psycopg cannot use the 'ProactorEventLoop'`). Wymusza
+`SelectorEventLoop` przez `loop_factory`, bez API polityk pętli usuwanego
+w Pythonie 3.16. Na Linuksie zachowanie jest identyczne, więc kontener
+korzysta z tego samego wejścia.
+
+## Konfiguracja i sekrety
+
+`Settings` czyta z trzech źródeł, w kolejności ważności: zmienne środowiskowe,
+plik `.env`, pliki w `/run/secrets`. Nazwa pliku odpowiada nazwie pola —
+`secrets/postgres_password.txt` trafia do kontenera jako
+`/run/secrets/postgres_password` i zasila `postgres_password`. Ten sam plik
+obsługuje bazę przez `POSTGRES_PASSWORD_FILE`, więc hasło nie pojawia się
+w żadnej zmiennej środowiskowej. Katalog `/run/secrets` wykrywany jest
+dynamicznie — poza Dockerem nie istnieje i pydantic-settings go pomija.
+
+Wymagane sekrety: `postgres_password`, `gemini_api_key`, `r2_access_key_id`,
+`r2_secret_access_key`, `olx_client_id`, `olx_client_secret`,
+`token_encryption_key`.
+
+Zmiana `token_encryption_key` czyni zapisany token OLX nieodczytywalnym
+i wymusza ponowną autoryzację.
+
+## Interfejs WWW
+
+`src/zibicom/web/` — HTMX + Jinja2, równoległy do JSON API, wywołujący te same
+funkcje serwisowe w `intake.py`. Logika biznesowa nie istnieje w dwóch kopiach.
+
+1. `/ui/batches` — lista partii i formularz uploadu. Zwykły multipart POST
+   z przekierowaniem 303, żeby odświeżenie strony nie powtórzyło wgrywania.
+2. „Rozpoznaj" uruchamia rozpoznanie AI w tle (`BackgroundTasks`) i zwraca
+   pasek postępu odpytywany co 2 sekundy. Wywołanie synchroniczne zerwałoby
+   połączenie — rozpoznanie dużej partii trwa minuty.
+3. Karty pozycji pozwalają poprawić tytuł, cenę, stan i platformę, a następnie
+   zatwierdzić albo odrzucić pozycję. Błąd walidacji renderuje się w karcie
+   ze statusem 200 — HTMX podmienia DOM wyłącznie przy odpowiedziach 2xx, więc
+   `HTTPException` dałoby martwy przycisk bez komunikatu.
+4. Zatwierdzona pozycja odsłania „Publikuj". Publikacja jest nieodwracalna,
+   więc wymaga potwierdzenia w przeglądarce.
+
+Przycisk „Odśwież statusy OLX" w nagłówku odpytuje OLX dla ofert czekających
+na aktywację i aktualizuje ich status lokalnie.
+
 ## Schemat bazy
 
-- `platform` — słownik platform (bez PC), z `olx_attribute_value` pod API OLX.
+- `platform` — słownik platform (bez PC), z mapowaniem na kategorie
+  i atrybuty OLX.
 - `game` — katalog produktu: tytuł, platforma, EAN (8 lub 13 cyfr, opcjonalny).
 - `listing` — jedna oferta OLX = jeden fizyczny egzemplarz.
 - `listing_photo` — zdjęcia oferty, unikalna pozycja w obrębie oferty.
 - `sale_event` — sprzedaż (kanał `in_store` albo `olx`).
-- `olx_operation` — audyt wywołań API OLX (publikacja, wymiana/odświeżenie tokenu).
-- `olx_token` — singleton (id=1) z tokenami OAuth OLX, zaszyfrowanymi Fernetem
-  (`zibicom.crypto`) — klucz szyfrujący jest sekretem i nie trafia do bazy.
-- `intake_batch` / `intake_item` / `intake_photo` — poczekalnia (staging):
-  wynik rozpoznania AI jest niepewny (model myli ceny i czasem tytuły), więc
-  ląduje tu, a nie od razu w `game`/`listing` — dopóki człowiek nie zatwierdzi
-  pozycji. Publikacja (`POST /api/intake/items/{id}/publish`) promuje
-  zatwierdzoną pozycję do `game`/`listing`/`listing_photo` w jednej transakcji
-  i uzupełnia `intake_item.listing_id`.
+- `olx_operation` — audyt wywołań API OLX; przechowuje wysłany payload
+  i surową odpowiedź, co pozwala zdiagnozować odrzucenie przez porównanie
+  z podglądem z `/publish/preview`.
+- `olx_token` — singleton z tokenami OAuth zaszyfrowanymi Fernetem; klucz
+  szyfrujący jest sekretem i nie trafia do bazy.
+- `intake_batch` / `intake_item` / `intake_photo` — poczekalnia. Wynik
+  rozpoznania AI bywa niepewny, więc nie trafia od razu do `game`/`listing`.
+  Publikacja promuje zatwierdzoną pozycję do tabel produkcyjnych w jednej
+  transakcji — nie może powstać ogłoszenie na OLX bez rekordu w bazie.
 
-Konwencje: 3NF, soft delete (`is_active`), `created_at`/`updated_at` TIMESTAMPTZ,
-przy czym `updated_at` ustawia wspólny trigger `set_updated_at()` — kod
-aplikacyjny nigdy nie dotyka tej kolumny.
+Konwencje: 3NF, soft delete (`is_active`), `created_at`/`updated_at`
+TIMESTAMPTZ, przy czym `updated_at` ustawia wspólny trigger `set_updated_at()`.
+Kod aplikacyjny nigdy nie dotyka tej kolumny.
 
-### FIFO
+### FIFO (schemat gotowy, logika do napisania)
 
-Sklep trzyma po kilka kopii tego samego tytułu. Kopie są wymienne **tylko
-w obrębie pary (gra, stan)** — nowa i używana mają różne ceny. Gdy gra sprzeda
-się stacjonarnie, zdejmujemy najstarszą aktywną ofertę dla tej pary:
+Sklep trzyma po kilka kopii tego samego tytułu. Kopie są wymienne wyłącznie
+w obrębie pary `(gra, stan)` — nowa i używana mają różne ceny. Przy sprzedaży
+stacjonarnej należy zdjąć najstarszą aktywną ofertę tej pary:
 
 ```sql
 CREATE INDEX listing_fifo_idx
@@ -132,105 +166,146 @@ CREATE INDEX listing_fifo_idx
     WHERE status = 'active';
 ```
 
-EAN celowo **nie jest** duplikowany na `listing` — to złamanie 3NF. FIFO dołącza
-do `game` po `game_id`.
+EAN celowo nie jest duplikowany na `listing` — FIFO dołącza do `game`
+po `game_id`.
 
-## Praca z projektem
+## Reguły rozpoznawania
 
-```powershell
-uv sync                 # zależności
-uv run ruff check .     # lint
-uv run ruff format .    # formatowanie
-uv run pytest           # testy
+- **Granica egzemplarza to zdjęcie przodu pudełka**, nie zmiana tytułu.
+  Dwie kopie tej samej gry sfotografowane po kolei mają identyczny tytuł —
+  grupowanie po tytule scaliłoby je w jedną pozycję i zgubiło drugie
+  ogłoszenie razem z ceną. Konsekwencja operacyjna: fotografuj egzemplarze
+  po kolei, zawsze zaczynając od przodu. Liczba zdjęć na egzemplarz jest
+  dowolna (2 dla PlayStation i Xbox, 3+ dla Switcha i steelbooków).
+- Cena pochodzi **wyłącznie z naklejonej cenówki**, nigdy z wartości
+  rynkowej tytułu.
+- Stan `new` tylko przy folii lub pomarańczowej cenówce; biała oznacza
+  `used`. W razie wątpliwości `used` — opisanie używanej jako nowej kończy się
+  reklamacją.
+- Tytuł i cena mają osobne flagi pewności; pewność bierze się wyłącznie ze
+  zdjęcia, które daną wartość dostarczyło (tył pudełka nie widzi cenówki,
+  więc jego flagi nie mogą obniżać pewności odczytu z przodu).
+
+## Endpointy
+
+| Metoda | Ścieżka | Opis |
+| --- | --- | --- |
+| GET | `/health` | Stan aplikacji i bazy; 503 gdy baza nie odpowiada. |
+| GET | `/api/intake/batches` | Lista partii z licznikami pozycji i statusów. |
+| POST | `/api/intake/batches` | Upload zdjęć (multipart) — tworzy partię. |
+| POST | `/api/intake/batches/{id}/extract` | Rozpoznanie AI i grupowanie w pozycje. |
+| GET | `/api/intake/batches/{id}/items` | Pozycje partii do zatwierdzenia. |
+| PATCH | `/api/intake/items/{id}` | Ręczna korekta pól pozycji. |
+| POST | `/api/intake/items/{id}/approve` | Zatwierdzenie (wymaga tytułu i ceny). |
+| POST | `/api/intake/items/{id}/reject` | Odrzucenie pozycji. |
+| GET | `/api/intake/items/{id}/publish/preview` | Payload OLX bez wysyłki — diagnostyka bez zużywania próby. |
+| POST | `/api/intake/items/{id}/publish` | Publikacja na OLX i promocja do `game`/`listing`. |
+| POST | `/api/listings/sync-pending` | Reconciler: odpytuje OLX o oferty czekające na aktywację. |
+| POST | `/api/listings/{id}/sync-status` | Odświeżenie statusu pojedynczej oferty. |
+| GET | `/api/platforms` | Słownik platform. |
+| GET | `/api/olx/authorize` | URL logowania OAuth do otwarcia w przeglądarce. |
+| POST | `/api/olx/exchange` | Wymiana kodu na tokeny. |
+| GET | `/api/olx/status` | Stan autoryzacji: ważność, data wygaśnięcia. |
+| GET | `/api/olx/categories` | Kategorie na jednym poziomie drzewa. |
+| GET | `/api/olx/categories/search` | Rekurencyjne wyszukiwanie kategorii-liści. |
+| GET | `/api/olx/categories/{id}/attributes` | Atrybuty kategorii (wymagane i opcjonalne). |
+| GET | `/api/olx/cities` | Wyszukiwanie miast. |
+| GET | `/api/olx/cities/{id}/districts` | Dzielnice miasta (puste dla małych miejscowości). |
+
+Kolekcja Postman w `postman/zibicom-olx.postman_collection.json`.
+
+## Autoryzacja OLX
+
+Półręczna, wymagana raz na miesiąc. OLX nie akceptuje `localhost` jako
+redirect URI, a zarejestrowany adres (bucket R2) nie ma działającego
+endpointu — kod przepisuje się z paska adresu.
+
+```bash
+curl -s http://localhost:8000/api/olx/authorize      # otwórz zwrócony URL
+curl -s -X POST http://localhost:8000/api/olx/exchange \
+     -H "Content-Type: application/json" -d '{"code":"..."}'
+curl -s http://localhost:8000/api/olx/status
 ```
 
-### Testy i baza testowa
+Refresh token rotuje przy każdym odświeżeniu access tokenu i żyje około
+miesiąca. Nowa para musi zostać zapisana i natychmiast zacommitowana —
+w przeciwnym razie kolejne odświeżenie nie ma czym się uwierzytelnić
+i autoryzacja przepada bezpowrotnie. Z tego samego powodu publikacje
+wykonywane są sekwencyjnie: dwa równoległe odświeżenia unieważniłyby się
+nawzajem.
 
-Testy (`tests/test_olx.py`, `tests/test_intake.py`) łączą się z **prawdziwym**
-Postgresem z `docker-compose` — enumy, CHECK-i i kaskady FK w migracjach nie
-są mockowane. Fixture `db_session` (`tests/conftest.py`) czyści dane
-(`DELETE FROM ...`) po **każdym** teście, żeby kolejny test startował
-z czystym stanem.
+## Rozwój
 
-To czyszczenie **musi** działać na osobnej bazie, nigdy na tej, z której
-korzysta aplikacja — inaczej `pytest` kasowałby autoryzację OLX
-(`olx_token`) i docelowo inwentarz sklepu (`game`/`listing`) przy każdym
-uruchomieniu. Dlatego testy zawsze łączą się z bazą, której nazwa kończy się
-na `_test`:
+```bash
+uv sync
+uv run ruff check src/ tests/
+uv run ruff format src/ tests/
+uv run pytest -q
+```
 
-- domyślnie jest to `zibicom_test` (ta sama instancja Postgresa
-  z `docker-compose`, osobna baza w tym samym klastrze);
-- nazwę można nadpisać zmienną środowiskową `TEST_POSTGRES_DB` — pod
-  warunkiem, że i tak kończy się na `_test`.
+Zmiany schematu wyłącznie przez numerowane migracje SQL. Wcześniejszych
+migracji nie modyfikujemy. Bez `DROP`/`DELETE` na danych — soft delete
+przez `is_active`.
 
-To druga część zabezpieczenia jest **twardą blokadą, nie konwencją**:
-`tests/conftest.py` odmawia uruchomienia testów, jeśli skonfigurowana nazwa
-nie kończy się na `_test` (np. pomyłkowe `TEST_POSTGRES_DB=zibicom`), i
-dodatkowo sprawdza `SELECT current_database()` tuż przed każdym `DELETE`
-w ramach `db_session` — więc nawet błąd w samym kodzie fixture nie
-wystarczy, żeby dotknąć bazy aplikacji.
+### Baza testowa
 
-Baza testowa jest tworzona automatycznie (jeśli jeszcze nie istnieje)
-i migrowana od zera przy pierwszym uruchomieniu `pytest` w danym klastrze
-Postgres — nie trzeba nic robić ręcznie poza `docker compose up -d db`.
-Migracje **nie są idempotentne** (pisane do jednorazowego wykonania przez
-`docker-entrypoint-initdb.d`), więc po dodaniu nowej migracji do
-`migrations/` trzeba usunąć bazę testową, żeby została zmigrowana od nowa:
+Testy łączą się z prawdziwym Postgresem z `docker-compose` — enumy, CHECK-i
+i kaskady FK nie są mockowane. Fixture `db_session` czyści dane po każdym
+teście.
+
+Czyszczenie musi działać na osobnej bazie, nigdy na tej używanej przez
+aplikację: wcześniej w tym projekcie `pytest` realnie kasował autoryzację OLX
+przy każdym uruchomieniu. Zabezpieczenie jest dwuwarstwowe i twarde —
+`conftest.py` odmawia startu, jeśli nazwa bazy nie kończy się na `_test`,
+i niezależnie sprawdza `SELECT current_database()` tuż przed każdym `DELETE`.
+
+Domyślnie `zibicom_test`, do nadpisania przez `TEST_POSTGRES_DB` (nadal musi
+kończyć się na `_test`). Baza tworzona jest automatycznie i migrowana od zera
+przy pierwszym uruchomieniu. Migracje nie są idempotentne, więc po dodaniu
+nowej trzeba usunąć bazę testową:
 
 ```bash
 docker compose exec db psql -U zibicom -d postgres -c 'DROP DATABASE zibicom_test'
 ```
 
-## Endpointy
+## Układ repozytorium
 
-| Metoda | Ścieżka                               | Opis                                                     |
-| ------ | -------------------------------------- | --------------------------------------------------------- |
-| GET    | `/health`                              | Stan aplikacji i bazy; 503 gdy baza nie odpowiada.         |
-| POST   | `/api/intake/batches`                  | Upload zdjęć (multipart) — tworzy nową partię poczekalni. |
-| POST   | `/api/intake/batches/{id}/extract`     | Rozpoznanie AI + grupowanie zdjęć w pozycje.               |
-| GET    | `/api/intake/batches/{id}/items`       | Lista pozycji partii do zatwierdzenia.                    |
-| PATCH  | `/api/intake/items/{id}`               | Ręczna korekta pól pozycji.                                |
-| POST   | `/api/intake/items/{id}/approve`       | Zatwierdzenie pozycji (wymaga tytułu i ceny).              |
-| POST   | `/api/intake/items/{id}/reject`        | Odrzucenie pozycji.                                        |
-| POST   | `/api/intake/items/{id}/publish`       | Publikacja POJEDYNCZEJ zatwierdzonej pozycji na OLX + promocja do game/listing. |
-| GET    | `/api/platforms`                       | Słownik platform do listy wyboru.                          |
-| GET    | `/api/olx/authorize`                   | URL logowania OAuth OLX do otwarcia w przeglądarce.        |
-| POST   | `/api/olx/exchange`                    | Wymiana kodu (`{"code": "..."}` przepisanego z paska adresu) na tokeny. |
-| GET    | `/api/olx/status`                      | Stan autoryzacji OLX: czy jest ważna, kiedy wygasa.        |
-| GET    | `/api/olx/categories?parent_id=&q=`    | Kategorie OLX na jednym poziomie drzewa (dzieci `parent_id`, domyślnie kategorie główne); `q` filtruje po nazwie w obrębie poziomu. |
-| GET    | `/api/olx/categories/search?q=`        | Rekurencyjne wyszukiwanie kategorii-liści (`is_leaf=true`) w całym drzewie — jedyne, w których można wystawić ogłoszenie. |
-| GET    | `/api/olx/cities?q=`                   | Wyszukiwanie miast OLX (do ustalenia `olx_city_id`).       |
+```
+migrations/          numerowane migracje SQL (0001–0006)
+postman/             kolekcja Postman w kolejności workflow
+src/zibicom/
+  config.py          pydantic-settings: /run/secrets + .env
+  db.py              silnik i sesje SQLAlchemy
+  main.py            FastAPI, /health, podpięcie routerów
+  routers.py         JSON API: poczekalnia, listingi, OLX
+  intake.py          logika poczekalni, publikacja, reconciler statusów
+  photos.py          normalizacja zdjęć, upload/download/delete w R2
+  vision.py          rozpoznawanie egzemplarzy przez Gemini
+  grouping.py        grupowanie zdjęć w egzemplarze po is_front
+  models.py          modele Pydantic wyniku rozpoznania
+  crypto.py          szyfrowanie tokenów OLX (Fernet)
+  olx.py             OLX Partner API: OAuth, publikacja, słowniki
+  web/               interfejs WWW (router + szablony Jinja2)
+tests/               pytest, fixtures w conftest.py
+secrets/             pliki sekretów (ignorowane przez git)
+```
 
-Autoryzacja OLX jest **półręczna** — OLX nie akceptuje `localhost`, a
-zarejestrowany redirect URI (adres w R2) nie ma działającego endpointu.
-Trzeba więc: otworzyć URL z `/api/olx/authorize`, zalogować się, przepisać
-parametr `code` z paska adresu po przekierowaniu i przesłać go przez
-`/api/olx/exchange`. Publikacja partii hurtem świadomie nie istnieje na tym
-etapie — `/api/intake/items/{id}/publish` publikuje jedną pozycję na raz.
+## Znane pułapki OLX Partner API
 
-## Interfejs WWW
+Ustalone empirycznie — dokumentacja ich nie opisuje.
 
-Pod `/ui/batches` działa prosty interfejs pracy dla operatora (HTMX + Jinja2,
-`src/zibicom/web/`) — równoległy do JSON API powyżej, wywołujący te same
-funkcje serwisowe w `intake.py` (logika biznesowa nie istnieje w dwóch
-kopiach). Pętla przyjęcia towaru:
-
-1. **`/ui/batches`** — lista partii + formularz uploadu zdjęć (zwykły
-   multipart POST, post-redirect-get: sukces przekierowuje na
-   `/ui/batches/{id}`, żeby odświeżenie strony nie powtórzyło wgrywania).
-2. **„Rozpoznaj"** na stronie partii startuje rozpoznanie AI w tle
-   (`BackgroundTasks`) i pokazuje pasek postępu, który HTMX odpytuje co 2
-   sekundy (`GET /ui/batches/{id}/progress`), aż pojawią się karty pozycji.
-3. **Karty pozycji** pozwalają poprawić tytuł/cenę/stan/platformę
-   („Zapisz"), a następnie **zatwierdzić** albo **odrzucić** pozycję.
-4. Zatwierdzona pozycja odsłania przycisk **„Publikuj"** — publikacja na OLX
-   jest nieodwracalna (prawdziwe ogłoszenie, brak środowiska testowego OLX),
-   więc wymaga świadomej decyzji operatora, potwierdzonej dodatkowym
-   `hx-confirm` w przeglądarce.
-
-Nagłówek strony ma też przycisk „Odśwież statusy OLX"
-(`POST /ui/listings/sync-pending`) — odpytuje OLX dla ofert czekających na
-aktywację i aktualizuje ich status lokalnie.
-
-Kolekcja Postman z endpointami poczekalni, w kolejności workflow, jest
-w `postman/zibicom-olx.postman_collection.json`.
+- Nagłówek `Version: 2.0` wymagany na Partner API, ale **nie** na OAuth.
+- Własny `User-Agent` obowiązkowy; domyślny `python-httpx` dostaje puste 403
+  od CloudFronta.
+- Odpowiedzi opakowane w klucz `data`.
+- `POST /adverts` zwraca zwykle status `disabled`; aktywacja następuje
+  asynchronicznie po kilku minutach. Dlatego istnieje reconciler — bez niego
+  oferta zostaje w bazie jako nieaktywna i jest niewidoczna dla FIFO.
+- `ad_delivery` i `auto_extend_enabled` są tylko do odczytu; `POST`/`PUT` je
+  odrzucają (`ad_delivery` pustym 400 bez wskazania pola). Dostawa
+  i autoprzedłużanie ustawiane są ręcznie masowym narzędziem OLX.
+- Tytuł maksymalnie 70 znaków.
+- `district_id` wymagany dla miast z podziałem na dzielnice.
+- Kategoria 1915 „Konsole" należy do drzewa mebli — właściwe kategorie gier
+  to 2272 (PlayStation), 2273 (Xbox), 2274 (Nintendo).
+- Limit 4500 żądań na 5 minut; bump ogłoszenia nie częściej niż raz na 14 dni.
