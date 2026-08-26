@@ -1,6 +1,7 @@
 """Router zwracajacy HTML dla interfejsu pracownika."""
 
 from pathlib import Path
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
@@ -11,6 +12,8 @@ from zibicom import intake
 from zibicom.db import get_session
 
 router = APIRouter(prefix="/ui", tags=["ui"])
+
+SessionDep = Annotated[AsyncSession, Depends(get_session)]
 templates = Jinja2Templates(directory=Path(__file__).parent / "templates")
 
 
@@ -18,7 +21,7 @@ templates = Jinja2Templates(directory=Path(__file__).parent / "templates")
 async def batch_detail(
     request: Request,
     batch_id: int,
-    session: AsyncSession = Depends(get_session),
+    session: SessionDep,
 ) -> HTMLResponse:
     """Renderuje pozycje poczekalni dla wskazanej partii.
 

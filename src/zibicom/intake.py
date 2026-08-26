@@ -790,7 +790,12 @@ _OLX_STATUS_TO_LISTING_STATUS = {
     "moderated": "pending",
     "removed": "removed",
     "outdated": "removed",
-    "disabled": "removed",
+    # `disabled` jest niejednoznaczny: tuz po POST /adverts oznacza "jeszcze
+    # nie aktywowane" (OLX aktywuje asynchronicznie, kilka minut), a po czasie
+    # - realnie zdjete. Mapujemy na stan przejsciowy, bo blad w te strone
+    # naprawia reconciler przy kolejnym odpytaniu; blad w strone terminalna
+    # jest trwaly - nikt juz takiego listingu nie sprawdzi, a FIFO go nie widzi.
+    "disabled": "pending",
 }
 
 
@@ -1130,3 +1135,96 @@ async def list_platforms(session: AsyncSession) -> list[PlatformView]:
         )
     ).all()
     return [PlatformView(**row._mapping) for row in rows]
+
+
+class SyncPendingResult(BaseModel):
+    """Podsumowanie przebiegu reconcilera statusow.
+
+    Attributes:
+        checked: Liczba listingow odpytanych w tym przebiegu.
+        activated: Liczba listingow, ktore przeszly w stan `active`.
+        still_pending: Liczba listingow nadal czekajacych na aktywacje.
+        terminal: Liczba listingow w stanie koncowym (`removed`).
+        failed: Liczba listingow, ktorych nie udalo sie odpytac.
+    """
+
+    checked: int
+    activated: int
+    still_pending: int
+    terminal: int
+    failed: int
+
+
+async def sync_pending_listings(
+    session: AsyncSession,
+    batch_limit: int = 100,
+) -> SyncPendingResult:
+    """Dosynchronizowuje statusy listingow czekajacych na aktywacje w OLX.
+
+    OLX aktywuje ogloszenia asynchronicznie - `POST /adverts` zwraca
+    `disabled`, a `active` pojawia sie dopiero po kilku minutach. Bez tego
+    przebiegu listing zostaje w `pending` i jest niewidoczny dla FIFO
+    (`listing_fifo_idx` obejmuje wylacznie `status = 'active'`).
+
+    Blad pojedynczego listingu nie przerywa przebiegu - pozostale musza
+    zostac odpytane, a nieudany rekord trafi do kolejnego uruchomienia.
+
+    Args:
+        session: Sesja bazodanowa.
+        batch_limit: Maksymalna liczba listingow odpytanych w jednym
+            przebiegu. Chroni przed wysypaniem tysiaca zadan do OLX naraz.
+
+    Returns:
+        Podsumowanie liczbowe przebiegu.
+    """
+    rows = await session.execute(
+        text(
+            """
+            SELECT id
+            FROM listing
+            WHERE status = 'pending'
+              AND olx_advert_id IS NOT NULL
+            ORDER BY id
+            LIMIT :limit
+            """
+        ),
+        {"limit": batch_limit},
+    )
+    listing_ids = [row[0] for row in rows]
+
+    activated = still_pending = terminal = failed = 0
+    for listing_id in listing_ids:
+        try:
+            view = await sync_advert_status(session, listing_id)
+        except Exception:
+            # Log obowiazkowy - cicha obsluga bledu ukrylaby blad konfiguracji
+            # (wygasly token, zmiana API) jako "nic sie nie stalo".
+            logger.exception(
+                "Nie udalo sie zsynchronizowac listingu %s.", listing_id
+            )
+            failed += 1
+            continue
+
+        if view.status == "active":
+            activated += 1
+        elif view.status == "pending":
+            still_pending += 1
+        else:
+            terminal += 1
+
+    logger.info(
+        "Reconciler: sprawdzono %d, aktywowano %d, nadal pending %d, "
+        "terminalne %d, bledy %d.",
+        len(listing_ids),
+        activated,
+        still_pending,
+        terminal,
+        failed,
+    )
+    return SyncPendingResult(
+        checked=len(listing_ids),
+        activated=activated,
+        still_pending=still_pending,
+        terminal=terminal,
+        failed=failed,
+    )

@@ -280,6 +280,34 @@ async def preview_publish_item(item_id: int, session: SessionDep) -> dict[str, A
 
 
 @router.post(
+    "/api/listings/sync-pending",
+    response_model=intake.SyncPendingResult,
+    tags=["listings"],
+)
+async def sync_pending_listings(
+    session: SessionDep, batch_limit: int = 100
+) -> intake.SyncPendingResult:
+    """Dosynchronizowuje oferty czekajace na aktywacje w OLX.
+
+    OLX aktywuje ogloszenia asynchronicznie - `POST /adverts` zwraca
+    `disabled`, a `active` pojawia sie dopiero kilka minut pozniej. Bez tego
+    przebiegu oferta zostaje w `pending` i jest niewidoczna dla FIFO
+    (listing_fifo_idx obejmuje wylacznie status='active').
+
+    Sciezka statyczna MUSI byc zadeklarowana przed
+    /api/listings/{listing_id}/sync-status - FastAPI dopasowuje trasy w
+    kolejnosci rejestracji i inaczej potraktowalby "sync-pending" jako
+    wartosc listing_id.
+    """
+    try:
+        return await intake.sync_pending_listings(
+            session, batch_limit=batch_limit
+        )
+    except (intake.IntakeError, olx.OlxError) as exc:
+        raise _http_exception_for(exc) from exc
+
+
+@router.post(
     "/api/listings/{listing_id}/sync-status",
     response_model=intake.ListingStatusView,
     tags=["listings"],
