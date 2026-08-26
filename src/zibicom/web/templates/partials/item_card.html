@@ -1,0 +1,23 @@
+<div id="item-{{ item.id }}" class="border rounded-lg bg-white p-4 mb-3">
+    <div class="flex gap-4">
+        {% if item.photo_urls %}
+        <img src="{{ item.photo_urls[0] }}" alt="" class="w-24 h-24 object-cover rounded border">
+        {% else %}
+        <div class="w-24 h-24 rounded border bg-slate-100"></div>
+        {% endif %}
+        <div class="flex-1 space-y-2">
+            <div class="text-xs text-slate-400">#{{ item.position }} &middot; {{ item.status }}</div>
+            <div class="font-medium">{{ item.title or "(brak tytulu)" }}</div>
+            <div class="text-sm text-slate-600">
+                {{ item.platform_name or item.platform_other or "(brak platformy)" }}
+                &middot; {{ item.price_pln if item.price_pln is not none else "?" }} zl
+                &middot; {{ item.condition or "?" }}
+            </div>
+            {% if item.ai_warning %}
+            <div class="text-sm rounded bg-amber-50 border border-amber-300 px-2 py-1">
+                {{ item.ai_warning }}
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</div>

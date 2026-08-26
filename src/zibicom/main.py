@@ -16,6 +16,7 @@ from zibicom.config import get_settings
 from zibicom.db import dispose_engine, get_session
 from zibicom.olx import dispose_http_client
 from zibicom.routers import router as intake_router
+from zibicom.web.routes import router as web_router
 
 
 class HealthResponse(BaseModel):
@@ -59,6 +60,7 @@ app = FastAPI(
 )
 
 app.include_router(intake_router)
+app.include_router(web_router)
 
 
 @app.get("/health", response_model=HealthResponse, tags=["monitoring"])
