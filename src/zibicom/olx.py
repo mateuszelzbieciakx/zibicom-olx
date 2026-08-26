@@ -1312,3 +1312,62 @@ async def create_advert(
             f"ogloszenia: {error_detail}"
         )
     return data
+
+
+_ADVERT_FIELDS = ("id", "status", "activated_at", "valid_to")
+
+
+def _compact_advert(raw: dict[str, Any]) -> dict[str, Any]:
+    """Redukuje surowy rekord ogloszenia OLX do pol istotnych dla klienta.
+
+    Args:
+        raw: Surowy rekord ogloszenia z odpowiedzi OLX.
+
+    Returns:
+        Slownik z wylacznie kluczami `_ADVERT_FIELDS`.
+    """
+    return {field: raw.get(field) for field in _ADVERT_FIELDS}
+
+
+async def fetch_advert(session: AsyncSession, advert_id: int) -> dict[str, Any]:
+    """Pobiera biezacy stan ogloszenia OLX (GET /adverts/{id}).
+
+    Status ogloszenia MOZE zmienic sie po naszej stronie bez naszego udzialu
+    (moderacja, wygasniecie po `valid_to`, zdjecie przez OLX) - status
+    zapisany przy publikacji (`create_advert`) jest wiec tylko migawka z
+    tamtej chwili. Zweryfikowane empirycznie: zaraz po utworzeniu OLX
+    zwrocil status "disabled", a kilka minut pozniej to samo ogloszenie
+    mialo juz "active" (`activated_at` bylo ustawione juz przy tworzeniu,
+    mimo statusu "disabled" - nie jest wiec wiarygodnym sygnalem samym w
+    sobie). Ta funkcja sluzy do ODSWIEZENIA tego stanu na zadanie - patrz
+    `zibicom.intake.sync_advert_status`.
+
+    Args:
+        session: Sesja bazy danych.
+        advert_id: Id ogloszenia OLX (listing.olx_advert_id).
+
+    Returns:
+        Zwiezly stan ogloszenia (`_compact_advert`): id, status,
+        activated_at, valid_to.
+
+    Raises:
+        OlxAuthError: Gdy brak waznej autoryzacji OLX.
+        OlxApiError: Gdy wywolanie OLX sie nie powiedzie.
+    """
+    token = await get_access_token(session)
+    settings = get_settings()
+    response = await _partner_http_client().get(
+        f"{settings.olx_api_base_url}{_ADVERTS_PATH}/{advert_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    try:
+        body = response.json()
+    except ValueError:
+        body = None
+    data = _unwrap_data(body)
+    if response.status_code >= 400 or not isinstance(data, dict):
+        raise OlxApiError(
+            f"OLX zwrocilo nieoczekiwana odpowiedz przy fetch_advert "
+            f"({response.status_code}): {body!r}"
+        )
+    return _compact_advert(data)

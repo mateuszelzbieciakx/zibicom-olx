@@ -280,6 +280,41 @@ async def test_list_platforms_zwraca_slownik(db_session: AsyncSession) -> None:
 
 
 # --------------------------------------------------------------------------
+# _map_olx_status
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw_status", "expected"),
+    [
+        ("active", "active"),
+        ("new", "pending"),
+        ("waiting", "pending"),
+        ("moderated", "pending"),
+        ("removed", "removed"),
+        ("outdated", "removed"),
+        ("disabled", "removed"),
+    ],
+)
+def test_map_olx_status_znane_wartosci(raw_status: str, expected: str) -> None:
+    assert intake._map_olx_status(raw_status) == expected
+
+
+def test_map_olx_status_nieznana_wartosc_mapuje_na_pending_z_ostrzezeniem(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level("WARNING"):
+        result = intake._map_olx_status("some_new_olx_status")
+
+    assert result == "pending"
+    assert "some_new_olx_status" in caplog.text
+
+
+def test_map_olx_status_brak_wartosci_mapuje_na_pending() -> None:
+    assert intake._map_olx_status(None) == "pending"
+
+
+# --------------------------------------------------------------------------
 # publish_item
 # --------------------------------------------------------------------------
 
@@ -418,6 +453,40 @@ async def test_publish_item_promuje_do_tabel_produkcyjnych(
     assert [tuple(row) for row in photo_rows] == [
         ("https://cdn.example.test/1.jpg", True)
     ]
+
+
+async def test_publish_item_status_active_mapuje_i_ustawia_posted_at(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regresja: FIFO (listing_fifo_idx) szuka WYLACZNIE status='active'.
+
+    Gdy OLX zwroci przy tworzeniu ogloszenie juz aktywne (bez moderacji dla
+    zaufanych kont), listing.status ma byc 'active' - nie na sztywno
+    'pending' jak poprzednio - i posted_at ma byc ustawione.
+    """
+    _, item_id = await _create_approved_item(db_session)
+
+    monkeypatch.setattr(intake.olx, "get_access_token", AsyncMock(return_value="AT-1"))
+    monkeypatch.setattr(
+        intake.olx,
+        "create_advert",
+        AsyncMock(return_value={"id": 12345, "status": "active"}),
+    )
+
+    published = await intake.publish_item(db_session, item_id)
+
+    listing = (
+        await db_session.execute(
+            text(
+                "SELECT status::TEXT, olx_status, posted_at FROM listing WHERE id = :id"
+            ),
+            {"id": published.listing_id},
+        )
+    ).first()
+    status, olx_status, posted_at = listing
+    assert status == "active"
+    assert olx_status == "active"
+    assert posted_at is not None
 
 
 async def test_publish_item_wysyla_category_id_z_platformy(
@@ -703,3 +772,148 @@ async def test_preview_publish_item_bez_tytulu_rzuca_blad(
 
     with pytest.raises(intake.IntakeValidationError, match="tytulu"):
         await intake.preview_publish_item(db_session, item_id)
+
+
+# --------------------------------------------------------------------------
+# sync_advert_status
+# --------------------------------------------------------------------------
+
+
+async def _publish_with_status(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch, *, olx_status: str
+) -> int:
+    """Publikuje pozycje (create_advert zamockowane na `olx_status`).
+
+    Returns:
+        listing_id opublikowanej oferty.
+    """
+    _, item_id = await _create_approved_item(db_session)
+    monkeypatch.setattr(intake.olx, "get_access_token", AsyncMock(return_value="AT-1"))
+    monkeypatch.setattr(
+        intake.olx,
+        "create_advert",
+        AsyncMock(return_value={"id": 987654, "status": olx_status}),
+    )
+    published = await intake.publish_item(db_session, item_id)
+    assert published.listing_id is not None
+    return published.listing_id
+
+
+async def test_sync_advert_status_aktualizuje_status_i_ustawia_posted_at(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sprawdza, ze sync przenosi ogloszenie z 'pending' do 'active'.
+
+    Odtwarza dokladnie zglosszony przypadek: OLX zwrocil przy tworzeniu
+    status "new" (u nas 'pending'), a przy odczycie juz "active".
+    """
+    listing_id = await _publish_with_status(db_session, monkeypatch, olx_status="new")
+
+    monkeypatch.setattr(
+        intake.olx,
+        "fetch_advert",
+        AsyncMock(
+            return_value={
+                "id": 987654,
+                "status": "active",
+                "activated_at": "2026-08-26 08:37:06",
+                "valid_to": "2026-09-25 08:34:36",
+            }
+        ),
+    )
+
+    result = await intake.sync_advert_status(db_session, listing_id)
+
+    assert result.status == "active"
+    assert result.olx_status == "active"
+    assert result.posted_at is not None
+
+    row = (
+        await db_session.execute(
+            text(
+                "SELECT status::TEXT, olx_status, posted_at FROM listing WHERE id = :id"
+            ),
+            {"id": listing_id},
+        )
+    ).first()
+    assert tuple(row[:2]) == ("active", "active")
+    assert row[2] is not None
+
+
+async def test_sync_advert_status_nie_nadpisuje_posted_at_gdy_juz_aktywna(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Kolejna synchronizacja juz aktywnej oferty NIE przesuwa posted_at.
+
+    To ten sam, pierwszy moment aktywacji - nie "teraz".
+    """
+    listing_id = await _publish_with_status(db_session, monkeypatch, olx_status="new")
+    monkeypatch.setattr(
+        intake.olx,
+        "fetch_advert",
+        AsyncMock(return_value={"id": 987654, "status": "active"}),
+    )
+    first = await intake.sync_advert_status(db_session, listing_id)
+
+    second = await intake.sync_advert_status(db_session, listing_id)
+
+    assert second.posted_at == first.posted_at
+
+
+async def test_sync_advert_status_mapuje_removed(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    listing_id = await _publish_with_status(
+        db_session, monkeypatch, olx_status="active"
+    )
+    monkeypatch.setattr(
+        intake.olx,
+        "fetch_advert",
+        AsyncMock(return_value={"id": 987654, "status": "outdated"}),
+    )
+
+    result = await intake.sync_advert_status(db_session, listing_id)
+
+    assert result.status == "removed"
+    assert result.olx_status == "outdated"
+
+
+async def test_sync_advert_status_nieistniejacej_oferty_rzuca_not_found(
+    db_session: AsyncSession,
+) -> None:
+    with pytest.raises(intake.IntakeNotFoundError):
+        await intake.sync_advert_status(db_session, 999_999)
+
+
+async def test_sync_advert_status_bez_olx_advert_id_rzuca_blad(
+    db_session: AsyncSession,
+) -> None:
+    """Sprawdza wynik dla oferty istniejacej, ale nigdy nie opublikowanej.
+
+    Bez olx_advert_id nie ma czego synchronizowac.
+    """
+    platform_id = (
+        await db_session.execute(text("SELECT id FROM platform WHERE code = 'ps4_ps5'"))
+    ).scalar_one()
+    game_id = (
+        await db_session.execute(
+            text(
+                "INSERT INTO game (title, platform_id) VALUES ('Test Game', :pid) "
+                "RETURNING id"
+            ),
+            {"pid": platform_id},
+        )
+    ).scalar_one()
+    listing_id = (
+        await db_session.execute(
+            text(
+                "INSERT INTO listing (game_id, condition, price_pln, status) "
+                "VALUES (:gid, 'used', 10, 'draft') RETURNING id"
+            ),
+            {"gid": game_id},
+        )
+    ).scalar_one()
+    await db_session.commit()
+
+    with pytest.raises(intake.IntakeValidationError, match="olx_advert_id"):
+        await intake.sync_advert_status(db_session, listing_id)

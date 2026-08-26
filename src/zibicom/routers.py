@@ -268,14 +268,35 @@ async def preview_publish_item(item_id: int, session: SessionDep) -> dict[str, A
 
     Dokladnie ten sam payload, ktory poszedlby do OLX przy POST
     .../publish (te same funkcje: build_title, build_description,
-    resolve_delivery_attribute, build_advert_payload), ale bez wywolania
-    create_advert - do diagnozowania bledow walidacji OLX bez zuzywania
-    proby na prawdziwej publikacji. Dostepne dla pozycji w dowolnym
-    statusie (nie tylko 'approved'), zeby dalo sie zdiagnozowac problem
-    przed zatwierdzeniem.
+    build_advert_payload), ale bez wywolania create_advert - do
+    diagnozowania bledow walidacji OLX bez zuzywania proby na prawdziwej
+    publikacji. Dostepne dla pozycji w dowolnym statusie (nie tylko
+    'approved'), zeby dalo sie zdiagnozowac problem przed zatwierdzeniem.
     """
     try:
         return await intake.preview_publish_item(session, item_id)
+    except (intake.IntakeError, olx.OlxError) as exc:
+        raise _http_exception_for(exc) from exc
+
+
+@router.post(
+    "/api/listings/{listing_id}/sync-status",
+    response_model=intake.ListingStatusView,
+    tags=["listings"],
+)
+async def sync_advert_status(
+    listing_id: int, session: SessionDep
+) -> intake.ListingStatusView:
+    """Odswieza status oferty z OLX (GET /adverts/{id}) i zapisuje go lokalnie.
+
+    Status oferty moze zmienic sie po naszej stronie bez naszego udzialu
+    (moderacja, wygasniecie, zdjecie przez OLX) - ten endpoint pobiera
+    aktualny stan i mapuje go na nasz listing_status, m.in. zeby FIFO przy
+    sprzedazy stacjonarnej (listing_fifo_idx, WHERE status='active')
+    faktycznie widzialo aktywne oferty.
+    """
+    try:
+        return await intake.sync_advert_status(session, listing_id)
     except (intake.IntakeError, olx.OlxError) as exc:
         raise _http_exception_for(exc) from exc
 

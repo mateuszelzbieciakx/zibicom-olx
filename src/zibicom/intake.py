@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
 from decimal import Decimal
 from typing import Any, Literal
 
@@ -130,6 +131,25 @@ class IntakeItemUpdate(BaseModel):
         if value is not None and value < 0:
             raise ValueError("Cena nie moze byc ujemna.")
         return value
+
+
+class ListingStatusView(BaseModel):
+    """Stan oferty po synchronizacji z OLX (`sync_advert_status`).
+
+    Attributes:
+        id: Identyfikator oferty.
+        status: Nasz status (`listing_status`) po zmapowaniu z OLX
+            (`_map_olx_status`).
+        olx_status: Surowy status zwrocony przez OLX, niezaleznie od
+            mapowania.
+        posted_at: Moment, w ktorym oferta stala sie aktywna (None, jesli
+            jeszcze nie byla).
+    """
+
+    id: int
+    status: str
+    olx_status: str | None
+    posted_at: datetime | None
 
 
 _ITEM_VIEW_SELECT = """\
@@ -763,6 +783,50 @@ def _build_advert_payload_for_item(
     )
 
 
+_OLX_STATUS_TO_LISTING_STATUS = {
+    "active": "active",
+    "new": "pending",
+    "waiting": "pending",
+    "moderated": "pending",
+    "removed": "removed",
+    "outdated": "removed",
+    "disabled": "removed",
+}
+
+
+def _map_olx_status(raw_status: str | None) -> str:
+    """Mapuje surowy status OLX na nasz enum `listing_status`.
+
+    Wystawienie ogloszenia to nie to samo, co bycie widocznym - OLX zwraca
+    status "new"/"waiting"/"moderated" przed moderacja i "active" dopiero po
+    niej (zweryfikowane empirycznie: to samo ogloszenie mialo "disabled"
+    zaraz po utworzeniu, a "active" kilka minut pozniej). FIFO przy
+    sprzedazy stacjonarnej (listing_fifo_idx) szuka WYLACZNIE status='active',
+    wiec pomylkowe zostawienie 'pending' dla juz aktywnego ogloszenia
+    oznaczaloby, ze FIFO nigdy go nie znajdzie.
+
+    Args:
+        raw_status: Surowy status z odpowiedzi OLX (`create_advert`/
+            `olx.fetch_advert`), albo None.
+
+    Returns:
+        Jedna z wartosci `listing_status`: "active", "pending" albo
+        "removed". Nieznany/brakujacy status mapuje na "pending" (bezpieczny
+        domyslny stan - ani falszywie aktywny w FIFO, ani przedwczesnie
+        zdjety) i jest logowany jako ostrzezenie, zeby dodac go do mapowania
+        zamiast cicho tracic informacje.
+    """
+    mapped = _OLX_STATUS_TO_LISTING_STATUS.get(raw_status) if raw_status else None
+    if mapped is not None:
+        return mapped
+    logger.warning(
+        "Nieznany status OLX %r - mapuje na 'pending'. Dodaj go do "
+        "_OLX_STATUS_TO_LISTING_STATUS w zibicom.intake.",
+        raw_status,
+    )
+    return "pending"
+
+
 async def publish_item(session: AsyncSession, item_id: int) -> IntakeItemView:
     """Publikuje zatwierdzona pozycje na OLX i promuje ja do tabel produkcyjnych.
 
@@ -771,6 +835,16 @@ async def publish_item(session: AsyncSession, item_id: int) -> IntakeItemView:
     koniec ustawienie `intake_item.status='published'` razem z `listing_id`.
     Cokolwiek zawiedzie po drodze wycofuje CALOSC - nie moze zostac
     ogloszenie na OLX bez odpowiadajacego mu rekordu w bazie.
+
+    `listing.status` po publikacji NIE jest juz na sztywno 'pending' -
+    mapuje sie z surowego statusu OLX (`_map_olx_status`), bo OLX moze
+    zwrocic w odpowiedzi na create_advert ogloszenie juz aktywne (bez
+    moderacji dla zaufanych kont) - FIFO przy sprzedazy stacjonarnej
+    (listing_fifo_idx) szuka WYLACZNIE status='active', wiec pozostawienie
+    'pending' dla juz aktywnego ogloszenia oznaczaloby, ze FIFO nigdy go nie
+    znajdzie. Status MOZE tez zmienic sie PO tej funkcji, bez naszego
+    udzialu (moderacja z opoznieniem, wygasniecie, zdjecie przez OLX) - do
+    tego sluzy `sync_advert_status`.
 
     Token OLX jest zdobywany PRZED jakimkolwiek zapisem do bazy w tej
     funkcji - `olx.get_access_token` moze przy okazji zacommitowac odswiezony
@@ -865,17 +939,23 @@ async def publish_item(session: AsyncSession, item_id: int) -> IntakeItemView:
         advert = await olx.create_advert(
             session, payload, access_token=access_token, listing_id=listing_id
         )
+        raw_status = advert.get("status")
+        mapped_status = _map_olx_status(raw_status)
 
         await session.execute(
             text(
                 "UPDATE listing SET olx_advert_id = :advert_id, "
+                "status = CAST(:status AS listing_status), "
                 "olx_status = :olx_status, "
-                "olx_payload = CAST(:payload AS jsonb), posted_at = now() "
+                "olx_payload = CAST(:payload AS jsonb), "
+                "posted_at = CASE WHEN :status = 'active' "
+                "THEN now() ELSE posted_at END "
                 "WHERE id = :listing_id"
             ),
             {
                 "advert_id": advert.get("id"),
-                "olx_status": advert.get("status"),
+                "status": mapped_status,
+                "olx_status": raw_status,
                 "payload": json.dumps(payload),
                 "listing_id": listing_id,
             },
@@ -947,6 +1027,87 @@ async def preview_publish_item(session: AsyncSession, item_id: int) -> dict[str,
         console_name=console_name,
         olx_attribute_value=olx_attribute_value,
         olx_category_id=olx_category_id,
+    )
+
+
+async def sync_advert_status(
+    session: AsyncSession, listing_id: int
+) -> ListingStatusView:
+    """Odswieza status oferty z OLX (GET /adverts/{id}) i zapisuje go lokalnie.
+
+    Status oferty MOZE zmienic sie po naszej stronie bez naszego udzialu -
+    moderacja z opoznieniem, wygasniecie po `valid_to`, zdjecie przez OLX
+    (zweryfikowane empirycznie: to samo ogloszenie mialo status "disabled"
+    zaraz po utworzeniu, a "active" kilka minut pozniej) - `publish_item`
+    zapisuje tylko migawke z chwili publikacji. Ta funkcja pobiera aktualny
+    stan (`olx.fetch_advert`) i aktualizuje `listing.status` (po zmapowaniu
+    przez `_map_olx_status`) oraz `listing.olx_status` (surowa wartosc).
+
+    `posted_at` jest ustawiane na `now()` TYLKO przy przejsciu w 'active' po
+    raz pierwszy (bylo NULL) - kolejne synchronizacje juz aktywnej oferty
+    (albo przejscie z 'active' do 'removed' po wygasnieciu) go nie ruszaja,
+    bo to nadal ten sam, pierwszy moment aktywacji.
+
+    Args:
+        session: Sesja bazy danych.
+        listing_id: Identyfikator oferty.
+
+    Returns:
+        Zaktualizowany stan oferty.
+
+    Raises:
+        IntakeNotFoundError: Gdy oferta o podanym id nie istnieje.
+        IntakeValidationError: Gdy oferta nigdy nie zostala opublikowana na
+            OLX (brak `olx_advert_id`) - nie ma wtedy czego synchronizowac.
+        olx.OlxAuthError: Gdy brak waznej autoryzacji OLX.
+        olx.OlxApiError: Gdy wywolanie OLX sie nie powiedzie.
+    """
+    row = (
+        await session.execute(
+            text("SELECT olx_advert_id FROM listing WHERE id = :listing_id"),
+            {"listing_id": listing_id},
+        )
+    ).first()
+    if row is None:
+        raise IntakeNotFoundError(f"Oferta o id {listing_id} nie istnieje.")
+    advert_id = row[0]
+    if advert_id is None:
+        raise IntakeValidationError(
+            f"Oferta o id {listing_id} nie zostala jeszcze opublikowana na "
+            "OLX (brak olx_advert_id) - nie ma czego synchronizowac."
+        )
+
+    advert = await olx.fetch_advert(session, advert_id)
+    raw_status = advert.get("status")
+    mapped_status = _map_olx_status(raw_status)
+
+    await session.execute(
+        text(
+            "UPDATE listing SET status = CAST(:status AS listing_status), "
+            "olx_status = :olx_status, "
+            "posted_at = CASE WHEN :status = 'active' AND posted_at IS NULL "
+            "THEN now() ELSE posted_at END "
+            "WHERE id = :listing_id"
+        ),
+        {"status": mapped_status, "olx_status": raw_status, "listing_id": listing_id},
+    )
+    await session.commit()
+
+    updated = (
+        await session.execute(
+            text(
+                "SELECT id, status::TEXT AS status, olx_status, posted_at "
+                "FROM listing WHERE id = :listing_id"
+            ),
+            {"listing_id": listing_id},
+        )
+    ).first()
+    mapping = updated._mapping
+    return ListingStatusView(
+        id=mapping["id"],
+        status=mapping["status"],
+        olx_status=mapping["olx_status"],
+        posted_at=mapping["posted_at"],
     )
 
 
