@@ -1,0 +1,5 @@
+{% if error %}
+<span class="text-red-700">Blad synchronizacji: {{ error }}</span>
+{% else %}
+<span class="text-slate-600">sprawdzono {{ result.checked }}, aktywowano {{ result.activated }}, oczekuje {{ result.still_pending }}, bledy {{ result.failed }}</span>
+{% endif %}

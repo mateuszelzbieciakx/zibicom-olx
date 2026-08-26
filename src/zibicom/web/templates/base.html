@@ -8,8 +8,18 @@
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-slate-50 text-slate-900">
-    <header class="border-b bg-white px-6 py-3 font-semibold">
+    <header class="border-b bg-white px-6 py-3 font-semibold flex items-center justify-between">
         <a href="/ui/batches" class="text-inherit no-underline">zibicom &rarr; OLX</a>
+        <div class="flex items-center gap-3 font-normal text-sm">
+            <button type="button"
+                    hx-post="/ui/listings/sync-pending"
+                    hx-target="#sync-result"
+                    hx-disabled-elt="this"
+                    class="px-3 py-1 bg-slate-800 text-white rounded text-sm disabled:opacity-50">
+                Odśwież statusy OLX
+            </button>
+            <span id="sync-result"></span>
+        </div>
     </header>
     <main class="max-w-4xl mx-auto p-6">{% block content %}{% endblock %}</main>
 </body>

@@ -241,6 +241,29 @@ async def batch_extraction_progress(
     )
 
 
+@router.post("/listings/sync-pending", response_class=HTMLResponse)
+async def sync_pending_listings(request: Request, session: SessionDep) -> HTMLResponse:
+    """Odswieza statusy ofert czekajacych na aktywacje w OLX (przycisk w naglowku).
+
+    Woła ta sama funkcje serwisowa co `POST /api/listings/sync-pending`.
+    Blad OLX (np. brak autoryzacji) nie jest wyjatkiem HTTP - fragment
+    pokazuje komunikat, status pozostaje 200, zeby HTMX podmienil DOM.
+    """
+    try:
+        result = await intake.sync_pending_listings(session)
+    except (intake.IntakeError, olx.OlxError) as exc:
+        return templates.TemplateResponse(
+            request=request,
+            name="partials/sync_result.html",
+            context={"error": str(exc)},
+        )
+    return templates.TemplateResponse(
+        request=request,
+        name="partials/sync_result.html",
+        context={"result": result},
+    )
+
+
 @router.post("/items/{item_id}/save", response_class=HTMLResponse)
 async def save_item(
     request: Request,
