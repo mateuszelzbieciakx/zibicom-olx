@@ -1,0 +1,27 @@
+{% include "partials/batch_items.html" %}
+<div id="batch-publish">
+    {% if result %}
+    <div class="text-sm rounded px-2 py-1 mb-3 border {% if result.aborted or result.failed %}bg-red-50 border-red-300 text-red-800{% else %}bg-emerald-50 border-emerald-300 text-emerald-800{% endif %}">
+        <div>
+            Opublikowano {{ result.published }}, bledy {{ result.failed }}, pominieto {{ result.skipped }}.
+        </div>
+        {% if result.aborted %}
+        <div class="font-medium mt-1">
+            Przebieg przerwany po serii bledow pod rzad (circuit breaker) -
+            sprawdz autoryzacje OLX (np. przycisk "Odswiez statusy OLX" w
+            naglowku) przed ponowna proba.
+        </div>
+        {% endif %}
+        {% if result.errors %}
+        <ul class="mt-1 list-disc list-inside">
+            {% for item_id, message in result.errors %}
+            <li>Pozycja #{{ item_id }}: {{ message }}</li>
+            {% endfor %}
+        </ul>
+        {% endif %}
+    </div>
+    {% endif %}
+    {% if approved_count %}
+    {% include "partials/batch_publish_button.html" %}
+    {% endif %}
+</div>

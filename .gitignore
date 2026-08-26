@@ -25,3 +25,10 @@ htmlcov/
 .vscode/
 Thumbs.db
 desktop.ini
+
+# Rusztowanie sesji roboczych
+BRIEF-*.md
+PLAN-*.md
+ZADANIE-*.md
+handoff.md
+verify_mvp.sh

@@ -7,6 +7,11 @@
 
 {% if items %}
 {% include "partials/batch_items.html" %}
+{% if publishing %}
+{% include "partials/batch_publish_progress.html" %}
+{% elif approved_count %}
+{% include "partials/batch_publish_button.html" %}
+{% endif %}
 {% elif extracting %}
 {% include "partials/batch_progress.html" %}
 {% else %}

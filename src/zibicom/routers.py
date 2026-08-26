@@ -290,6 +290,25 @@ async def preview_publish_item(item_id: int, session: SessionDep) -> dict[str, A
 
 
 @router.post(
+    "/api/intake/batches/{batch_id}/publish-all",
+    response_model=intake.BulkPublishResult,
+    tags=["intake"],
+)
+async def publish_batch(batch_id: int, session: SessionDep) -> intake.BulkPublishResult:
+    """Publikuje sekwencyjnie wszystkie zatwierdzone pozycje partii na OLX.
+
+    Sekwencyjnie i z pauza miedzy probami (`intake.publish_batch`) - patrz
+    tamten docstring o rotacji refresh tokenu OLX. Blad pojedynczej pozycji
+    nie przerywa przebiegu; seria 3 bledow pod rzad uruchamia circuit
+    breaker (`aborted=True` w odpowiedzi).
+    """
+    try:
+        return await intake.publish_batch(session, batch_id)
+    except intake.IntakeError as exc:
+        raise _http_exception_for(exc) from exc
+
+
+@router.post(
     "/api/listings/sync-pending",
     response_model=intake.SyncPendingResult,
     tags=["listings"],

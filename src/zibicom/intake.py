@@ -9,6 +9,7 @@ zakresem tego modulu.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import datetime
@@ -1140,6 +1141,153 @@ async def preview_publish_item(session: AsyncSession, item_id: int) -> dict[str,
         olx_attribute_value=olx_attribute_value,
         olx_category_id=olx_category_id,
     )
+
+
+class BulkPublishResult(BaseModel):
+    """Podsumowanie masowej publikacji zatwierdzonych pozycji jednej partii.
+
+    Attributes:
+        published: Liczba pozycji opublikowanych pomyslnie.
+        failed: Liczba pozycji, ktorych publikacja sie nie powiodla.
+        skipped: Liczba pozycji pominietych, bo nie mialy statusu 'approved'.
+        aborted: Czy przebieg zostal przerwany przez circuit breaker (3
+            bledy pod rzad).
+        errors: Pary (item_id, komunikat bledu) dla nieudanych pozycji, w
+            kolejnosci wystapienia.
+    """
+
+    published: int
+    failed: int
+    skipped: int
+    aborted: bool
+    errors: list[tuple[int, str]]
+
+
+_BULK_PUBLISH_DELAY_SECONDS = 0.3
+_BULK_PUBLISH_CIRCUIT_BREAKER_THRESHOLD = 3
+
+
+async def publish_batch(session: AsyncSession, batch_id: int) -> BulkPublishResult:
+    """Publikuje sekwencyjnie wszystkie zatwierdzone pozycje partii na OLX.
+
+    SEKWENCYJNIE - celowo bez jakiejkolwiek wspolbieznosci (zaden
+    asyncio.gather/TaskGroup). OLX rotuje refresh token przy kazdym
+    odswiezeniu access tokenu (`olx.get_access_token`): dwa rownolegle
+    zadania trafiajace na wygasly token probowalyby odswiezyc go
+    jednoczesnie, a pierwsze uniewaznioby token, ktorego uzywa drugie - to
+    bezpowrotna utrata autoryzacji (naprawa tylko recznym OAuth). Miedzy
+    kolejnymi probami publikacji `asyncio.sleep(0.3)` - higiena wobec
+    obcego API (limit OLX 4500 zadan/5 min nie jest zagrozony: 150 gier to
+    ok. 3% limitu).
+
+    Blad pojedynczej pozycji jest lapany, logowany (`logger.exception`) i
+    zapisywany do wyniku - NIE przerywa przebiegu, bo jedna wadliwa
+    pozycja nie moze zablokowac calej partii. Trzy bledy POD RZAD
+    uruchamiaja circuit breaker: przebieg jest przerywany (`aborted=True`)
+    zamiast probowac pozostale pozycje, bo seria bledow zwykle oznacza
+    problem systemowy (wygasla autoryzacja, zla konfiguracja), a nie wade
+    pojedynczej pozycji - dobijanie reszty tworzyloby tylko kolejne
+    nieudane proby na produkcyjnym API OLX (OLX nie ma srodowiska
+    testowego).
+
+    Wywoluje `publish_item` per pozycja - zero duplikacji logiki
+    publikacji, promocji do `game`/`listing`/`listing_photo` i mapowania
+    statusu OLX.
+
+    Args:
+        session: Sesja bazy danych.
+        batch_id: Identyfikator partii.
+
+    Returns:
+        Podsumowanie przebiegu.
+
+    Raises:
+        IntakeNotFoundError: Gdy partia nie istnieje.
+    """
+    if not await _batch_exists(session, batch_id):
+        raise IntakeNotFoundError(f"Partia o id {batch_id} nie istnieje.")
+
+    rows = (
+        await session.execute(
+            text(
+                "SELECT id, status::TEXT FROM intake_item "
+                "WHERE batch_id = :batch_id ORDER BY position"
+            ),
+            {"batch_id": batch_id},
+        )
+    ).all()
+
+    published = failed = skipped = 0
+    consecutive_failures = 0
+    attempted = 0
+    aborted = False
+    errors: list[tuple[int, str]] = []
+
+    for item_id, item_status in rows:
+        if item_status != "approved":
+            skipped += 1
+            continue
+
+        if attempted > 0:
+            await asyncio.sleep(_BULK_PUBLISH_DELAY_SECONDS)
+        attempted += 1
+
+        try:
+            await publish_item(session, item_id)
+        except Exception as exc:
+            logger.exception(
+                "Publikacja pozycji %s w partii %s (masowa publikacja) "
+                "nie powiodla sie.",
+                item_id,
+                batch_id,
+            )
+            failed += 1
+            consecutive_failures += 1
+            errors.append((item_id, str(exc)))
+            if consecutive_failures >= _BULK_PUBLISH_CIRCUIT_BREAKER_THRESHOLD:
+                aborted = True
+                break
+        else:
+            published += 1
+            consecutive_failures = 0
+
+    return BulkPublishResult(
+        published=published,
+        failed=failed,
+        skipped=skipped,
+        aborted=aborted,
+        errors=errors,
+    )
+
+
+async def publish_progress(session: AsyncSession, batch_id: int) -> tuple[int, int]:
+    """Zwraca postep masowej publikacji partii do paska postepu na `/ui`.
+
+    Liczony wylacznie z bazy (bez stanu w pamieci procesu) - pozycje juz
+    opublikowane wzgledem wszystkich pozycji, ktore sa (albo byly, zanim
+    zostaly opublikowane) zatwierdzone w tej partii. `publish_item`
+    zmienia status pozycji z 'approved' na 'published' dopiero po udanym
+    zapisie, wiec ten iloraz rosnie w miare przebiegu `publish_batch`.
+
+    Args:
+        session: Sesja bazy danych.
+        batch_id: Identyfikator partii.
+
+    Returns:
+        Krotke (opublikowane, wszystkie): liczba pozycji ze statusem
+        'published' i suma pozycji 'published' + 'approved' w partii.
+    """
+    row = (
+        await session.execute(
+            text(
+                "SELECT count(*) FILTER (WHERE status = 'published'), "
+                "count(*) FILTER (WHERE status IN ('published', 'approved')) "
+                "FROM intake_item WHERE batch_id = :batch_id"
+            ),
+            {"batch_id": batch_id},
+        )
+    ).one()
+    return row[0], row[1]
 
 
 async def sync_advert_status(

@@ -653,6 +653,215 @@ async def test_publish_item_blad_olx_wycofuje_cala_transakcje(
 
 
 # --------------------------------------------------------------------------
+# publish_batch
+# --------------------------------------------------------------------------
+
+
+async def _add_item(
+    db_session: AsyncSession,
+    batch_id: int,
+    position: int,
+    *,
+    status: str = "approved",
+    title: str = "Bloodborne",
+    price_pln: Decimal = Decimal("150"),
+    condition: str = "used",
+    platform_code: str = "ps4_ps5",
+) -> int:
+    """Dodaje pozycje o zadanym statusie do istniejacej partii.
+
+    Do testow `publish_batch`, ktore potrzebuja wielu pozycji w JEDNEJ
+    partii - w odroznieniu od `_create_approved_item` (nowa partia za
+    kazdym razem).
+    """
+    platform_id = (
+        await db_session.execute(
+            text("SELECT id FROM platform WHERE code = :code"),
+            {"code": platform_code},
+        )
+    ).scalar_one()
+    item_id = (
+        await db_session.execute(
+            text(
+                "INSERT INTO intake_item "
+                "(batch_id, position, title, platform_id, price_pln, condition, "
+                " status) "
+                "VALUES (:batch_id, :position, :title, :platform_id, :price_pln, "
+                " CAST(:condition AS listing_condition), "
+                " CAST(:status AS intake_item_status)) "
+                "RETURNING id"
+            ),
+            {
+                "batch_id": batch_id,
+                "position": position,
+                "title": title,
+                "platform_id": platform_id,
+                "price_pln": price_pln,
+                "condition": condition,
+                "status": status,
+            },
+        )
+    ).scalar_one()
+    await db_session.commit()
+    return item_id
+
+
+async def test_publish_batch_publikuje_sekwencyjnie_z_pauza_miedzy_probami(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    batch_id, item_1 = await _create_approved_item(db_session)
+    item_2 = await _add_item(db_session, batch_id, 2, title="Dark Souls")
+    item_3 = await _add_item(db_session, batch_id, 3, title="Sekiro")
+
+    monkeypatch.setattr(intake.olx, "get_access_token", AsyncMock(return_value="AT-1"))
+    advert_ids = iter([111, 222, 333])
+    monkeypatch.setattr(
+        intake.olx,
+        "create_advert",
+        AsyncMock(
+            side_effect=lambda *a, **k: {"id": next(advert_ids), "status": "new"}
+        ),
+    )
+    sleep = AsyncMock()
+    monkeypatch.setattr(intake.asyncio, "sleep", sleep)
+
+    result = await intake.publish_batch(db_session, batch_id)
+
+    assert result.published == 3
+    assert result.failed == 0
+    assert result.skipped == 0
+    assert result.aborted is False
+    assert result.errors == []
+
+    # Pauza MIEDZY probami - trzy pozycje, dwie pauzy, zadnej przed pierwsza.
+    assert sleep.await_count == 2
+    sleep.assert_awaited_with(0.3)
+
+    for item_id in (item_1, item_2, item_3):
+        status = (
+            await db_session.execute(
+                text("SELECT status::TEXT FROM intake_item WHERE id = :id"),
+                {"id": item_id},
+            )
+        ).scalar_one()
+        assert status == "published"
+
+
+async def test_publish_batch_pomija_pozycje_bez_statusu_approved(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    batch_id, item_approved = await _create_approved_item(db_session)
+    item_pending = await _add_item(db_session, batch_id, 2, status="pending")
+
+    monkeypatch.setattr(intake.olx, "get_access_token", AsyncMock(return_value="AT-1"))
+    monkeypatch.setattr(
+        intake.olx,
+        "create_advert",
+        AsyncMock(return_value={"id": 111, "status": "new"}),
+    )
+    monkeypatch.setattr(intake.asyncio, "sleep", AsyncMock())
+
+    result = await intake.publish_batch(db_session, batch_id)
+
+    assert result.published == 1
+    assert result.skipped == 1
+    assert result.failed == 0
+
+    pending_status = (
+        await db_session.execute(
+            text("SELECT status::TEXT FROM intake_item WHERE id = :id"),
+            {"id": item_pending},
+        )
+    ).scalar_one()
+    assert pending_status == "pending"
+
+
+async def test_publish_batch_kontynuuje_po_pojedynczym_bledzie(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pojedynczy blad (nie 3 pod rzad) nie przerywa przebiegu."""
+    batch_id, item_1 = await _create_approved_item(db_session)
+    item_2 = await _add_item(db_session, batch_id, 2, title="Dark Souls")
+    item_3 = await _add_item(db_session, batch_id, 3, title="Sekiro")
+    item_4 = await _add_item(db_session, batch_id, 4, title="Nioh")
+
+    monkeypatch.setattr(intake.olx, "get_access_token", AsyncMock(return_value="AT-1"))
+    monkeypatch.setattr(
+        intake.olx,
+        "create_advert",
+        AsyncMock(
+            side_effect=[
+                intake.olx.OlxApiError("blad 1"),
+                {"id": 111, "status": "new"},
+                intake.olx.OlxApiError("blad 2"),
+                intake.olx.OlxApiError("blad 3"),
+            ]
+        ),
+    )
+    monkeypatch.setattr(intake.asyncio, "sleep", AsyncMock())
+
+    result = await intake.publish_batch(db_session, batch_id)
+
+    assert result.published == 1
+    assert result.failed == 3
+    assert result.skipped == 0
+    assert result.aborted is False
+    assert [item_id for item_id, _ in result.errors] == [item_1, item_3, item_4]
+
+    status_2 = (
+        await db_session.execute(
+            text("SELECT status::TEXT FROM intake_item WHERE id = :id"),
+            {"id": item_2},
+        )
+    ).scalar_one()
+    assert status_2 == "published"
+
+
+async def test_publish_batch_circuit_breaker_przerywa_po_trzech_bledach_pod_rzad(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    batch_id, item_1 = await _create_approved_item(db_session)
+    item_2 = await _add_item(db_session, batch_id, 2, title="Dark Souls")
+    item_3 = await _add_item(db_session, batch_id, 3, title="Sekiro")
+    item_4 = await _add_item(db_session, batch_id, 4, title="Nioh")
+
+    monkeypatch.setattr(intake.olx, "get_access_token", AsyncMock(return_value="AT-1"))
+    monkeypatch.setattr(
+        intake.olx,
+        "create_advert",
+        AsyncMock(side_effect=intake.olx.OlxApiError("OLX zwrocilo 500")),
+    )
+    sleep = AsyncMock()
+    monkeypatch.setattr(intake.asyncio, "sleep", sleep)
+
+    result = await intake.publish_batch(db_session, batch_id)
+
+    assert result.published == 0
+    assert result.failed == 3
+    assert result.aborted is True
+    assert [item_id for item_id, _ in result.errors] == [item_1, item_2, item_3]
+    # Pauzy tylko miedzy proba 1-2 i 2-3 - przebieg konczy sie zaraz po
+    # trzecim bledzie, bez proby (a wiec i pauzy) dla czwartej pozycji.
+    assert sleep.await_count == 2
+
+    # Czwarta pozycja nigdy nie zostala tknieta - nadal 'approved'.
+    status_4 = (
+        await db_session.execute(
+            text("SELECT status::TEXT FROM intake_item WHERE id = :id"),
+            {"id": item_4},
+        )
+    ).scalar_one()
+    assert status_4 == "approved"
+
+
+async def test_publish_batch_nieistniejacej_partii_rzuca_not_found(
+    db_session: AsyncSession,
+) -> None:
+    with pytest.raises(intake.IntakeNotFoundError):
+        await intake.publish_batch(db_session, 999_999)
+
+
+# --------------------------------------------------------------------------
 # preview_publish_item
 # --------------------------------------------------------------------------
 

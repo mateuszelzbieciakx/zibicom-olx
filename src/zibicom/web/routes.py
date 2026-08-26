@@ -31,6 +31,19 @@ SessionDep = Annotated[AsyncSession, Depends(get_session)]
 # przy _run_extraction o utracie postepu przy restarcie).
 _running: set[int] = set()
 
+# Analogiczny guard idempotencji dla POST /batches/{id}/publish-all - drugi
+# klik/zdarzenie HTMX, dopoki poprzedni przebieg nie skonczy, nie wystawia
+# drugiego zadania w tle (patrz uzasadnienie sekwencyjnosci w
+# intake.publish_batch: rownolegle zadania OLX moga trwale uniewaznic
+# autoryzacje przez wyscig o rotacje refresh tokenu).
+_running_publish: set[int] = set()
+
+# Wynik ostatniego zakonczonego przebiegu `publish_batch`, do jednorazowego
+# pokazania w podsumowaniu po tym, jak batch_id zniknie z _running_publish -
+# `batch_publish_progress` go odczytuje i usuwa (patrz tamten docstring).
+# Zyje tylko w pamieci procesu, tak samo jak _running/_running_publish.
+_publish_results: dict[int, intake.BulkPublishResult] = {}
+
 
 async def _card(
     request: Request,
@@ -102,6 +115,28 @@ async def _run_extraction(batch_id: int) -> None:
         _running.discard(batch_id)
 
 
+async def _run_publish_batch(batch_id: int) -> None:
+    """Uruchamia `publish_batch` w tle, na wlasnej sesji DB.
+
+    Wlasna sesja z tego samego powodu co `_run_extraction`: zadanie HTTP,
+    ktore wystawilo to zadanie w tle, juz zakonczylo odpowiedz, a masowa
+    publikacja partii moze trwac minuty (150 pozycji x ~1,3s, patrz
+    `intake.publish_batch`). Wynik trafia do `_publish_results` PRZED
+    usunieciem batch_id z `_running_publish`, zeby poling
+    `/publish-progress` nigdy nie zobaczyl "juz nie biegnie" bez gotowego
+    wyniku do pokazania.
+    """
+    try:
+        async with get_sessionmaker()() as session:
+            _publish_results[batch_id] = await intake.publish_batch(session, batch_id)
+    except Exception:
+        logger.exception(
+            "Masowa publikacja partii %s w tle nie powiodla sie.", batch_id
+        )
+    finally:
+        _running_publish.discard(batch_id)
+
+
 @router.get("/batches", response_class=HTMLResponse)
 async def batches(request: Request, session: SessionDep) -> HTMLResponse:
     """Renderuje liste wszystkich partii, od najnowszej."""
@@ -153,15 +188,22 @@ async def batch_detail(
     ).scalar_one()
     items = await intake.list_items(session, batch_id)
     extracting = batch_id in _running
+    publishing = batch_id in _running_publish
+    approved_count = sum(1 for item in items if item.status == "approved")
     context: dict[str, object] = {
         "batch_id": batch_id,
         "photo_count": photo_count,
         "items": items,
         "platforms": await intake.list_platforms(session),
         "extracting": extracting,
+        "publishing": publishing,
+        "approved_count": approved_count,
     }
     if extracting:
         done, total = await intake.extraction_progress(session, batch_id)
+        context.update(_progress_context(batch_id, done, total))
+    elif publishing:
+        done, total = await intake.publish_progress(session, batch_id)
         context.update(_progress_context(batch_id, done, total))
     elif not items and await _batch_status(session, batch_id) == "failed":
         context["error"] = "Poprzednia proba rozpoznania nie powiodla sie."
@@ -238,6 +280,70 @@ async def batch_extraction_progress(
         request=request,
         name="partials/batch_extract_button.html",
         context={"batch_id": batch_id, "error": error},
+    )
+
+
+@router.post("/batches/{batch_id}/publish-all", response_class=HTMLResponse)
+async def start_publish_batch(
+    request: Request,
+    batch_id: int,
+    background_tasks: BackgroundTasks,
+    session: SessionDep,
+) -> HTMLResponse:
+    """Wystawia masowa publikacje partii w tle i zwraca fragment postepu.
+
+    Guard idempotencji analogiczny do `start_extraction`: `hx-disabled-elt`
+    na przycisku juz blokuje powtorne kliknieicie w przegladarce, ale ten
+    guard chroni tez przed wyscigiem/podwojnym zdarzeniem HTMX - dopoki
+    poprzedni przebieg partii nie skonczy, nie wystawia drugiego.
+    """
+    if batch_id not in _running_publish:
+        _running_publish.add(batch_id)
+        _publish_results.pop(batch_id, None)
+        background_tasks.add_task(_run_publish_batch, batch_id)
+    done, total = await intake.publish_progress(session, batch_id)
+    return templates.TemplateResponse(
+        request=request,
+        name="partials/batch_publish_progress.html",
+        context=_progress_context(batch_id, done, total),
+    )
+
+
+@router.get("/batches/{batch_id}/publish-progress", response_class=HTMLResponse)
+async def batch_publish_progress(
+    request: Request, batch_id: int, session: SessionDep
+) -> HTMLResponse:
+    """Fragment polingowany przez HTMX co 2s, dopoki masowa publikacja biegnie.
+
+    Nadal w toku -> pasek postepu z tym samym `hx-get` (poling siebie).
+    Zakonczona -> podsumowanie przebiegu (`_publish_results`, zdjete z
+    rejestru - jednorazowe) razem z odswiezonymi kartami pozycji (OOB
+    swap `#batch-items`, bo statusy pozycji sie zmienily) i przyciskiem
+    "Publikuj wszystko" ponownie, jesli zostaly jeszcze pozycje approved
+    (czesciowe niepowodzenie albo przerwanie circuit breakerem). Bez
+    `hx-trigger` w zadnej z tych galezi -> poling zatrzymuje sie sam.
+    """
+    if batch_id in _running_publish:
+        done, total = await intake.publish_progress(session, batch_id)
+        return templates.TemplateResponse(
+            request=request,
+            name="partials/batch_publish_progress.html",
+            context=_progress_context(batch_id, done, total),
+        )
+    result = _publish_results.pop(batch_id, None)
+    items = await intake.list_items(session, batch_id)
+    approved_count = sum(1 for item in items if item.status == "approved")
+    return templates.TemplateResponse(
+        request=request,
+        name="partials/batch_publish_result.html",
+        context={
+            "batch_id": batch_id,
+            "result": result,
+            "items": items,
+            "platforms": await intake.list_platforms(session),
+            "approved_count": approved_count,
+            "oob": True,
+        },
     )
 
 

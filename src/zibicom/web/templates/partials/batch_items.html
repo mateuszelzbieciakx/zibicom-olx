@@ -1,4 +1,4 @@
-<div id="batch-items">
+<div id="batch-items"{% if oob %} hx-swap-oob="true"{% endif %}>
     {% if not items %}
     <p class="text-slate-500">Rozpoznawanie nie znalazlo zadnych egzemplarzy.</p>
     {% endif %}
