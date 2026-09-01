@@ -4,8 +4,8 @@
             hx-target="#batch-publish"
             hx-swap="outerHTML"
             hx-disabled-elt="this"
-            hx-confirm="Opublikowac wszystkie zatwierdzone pozycje ({{ approved_count }})? Kazda publikacja to prawdziwe ogloszenie na koncie firmowym OLX - OLX nie ma srodowiska testowego, operacja jest nieodwracalna."
+            hx-confirm="Opublikowac wszystkie gotowe pozycje ({{ publishable_count }})? Kazda publikacja to prawdziwe ogloszenie na koncie firmowym OLX - OLX nie ma srodowiska testowego, operacja jest nieodwracalna."
             class="px-3 py-1 bg-emerald-700 text-white rounded text-sm disabled:opacity-50">
-        Publikuj wszystko ({{ approved_count }})
+        Publikuj wszystkie ({{ publishable_count }})
     </button>
 </div>

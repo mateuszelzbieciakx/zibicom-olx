@@ -927,6 +927,24 @@ async def test_approve_and_publish_nieistniejacej_pozycji_rzuca_not_found(
         await intake.approve_and_publish(db_session, 999_999)
 
 
+async def test_approve_and_publish_juz_zatwierdzonej_pomija_krok_zatwierdzania(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pozycje zatwierdzone wczesniejszym /approve (sprzed merge'a) tez publikuje."""
+    _, item_id = await _create_approved_item(db_session)
+
+    monkeypatch.setattr(intake.olx, "get_access_token", AsyncMock(return_value="AT-1"))
+    monkeypatch.setattr(
+        intake.olx,
+        "create_advert",
+        AsyncMock(return_value={"id": 12345, "status": "new"}),
+    )
+
+    published = await intake.approve_and_publish(db_session, item_id)
+
+    assert published.status == "published"
+
+
 # --------------------------------------------------------------------------
 # publish_batch
 # --------------------------------------------------------------------------
@@ -1022,11 +1040,11 @@ async def test_publish_batch_publikuje_sekwencyjnie_z_pauza_miedzy_probami(
         assert status == "published"
 
 
-async def test_publish_batch_pomija_pozycje_bez_statusu_approved(
+async def test_publish_batch_pomija_pozycje_spoza_pending_i_approved(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     batch_id, item_approved = await _create_approved_item(db_session)
-    item_pending = await _add_item(db_session, batch_id, 2, status="pending")
+    item_rejected = await _add_item(db_session, batch_id, 2, status="rejected")
 
     monkeypatch.setattr(intake.olx, "get_access_token", AsyncMock(return_value="AT-1"))
     monkeypatch.setattr(
@@ -1042,13 +1060,73 @@ async def test_publish_batch_pomija_pozycje_bez_statusu_approved(
     assert result.skipped == 1
     assert result.failed == 0
 
-    pending_status = (
+    rejected_status = (
+        await db_session.execute(
+            text("SELECT status::TEXT FROM intake_item WHERE id = :id"),
+            {"id": item_rejected},
+        )
+    ).scalar_one()
+    assert rejected_status == "rejected"
+
+
+async def test_publish_batch_zatwierdza_i_publikuje_pozycje_pending(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Od merge'a approve+publish, masowa publikacja obejmuje tez 'pending'."""
+    batch_id, item_pending = await _create_pending_item(db_session)
+
+    monkeypatch.setattr(intake.olx, "get_access_token", AsyncMock(return_value="AT-1"))
+    monkeypatch.setattr(
+        intake.olx,
+        "create_advert",
+        AsyncMock(return_value={"id": 111, "status": "new"}),
+    )
+    monkeypatch.setattr(intake.asyncio, "sleep", AsyncMock())
+
+    result = await intake.publish_batch(db_session, batch_id)
+
+    assert result.published == 1
+    assert result.failed == 0
+    assert result.skipped == 0
+
+    status = (
         await db_session.execute(
             text("SELECT status::TEXT FROM intake_item WHERE id = :id"),
             {"id": item_pending},
         )
     ).scalar_one()
-    assert pending_status == "pending"
+    assert status == "published"
+
+
+async def test_publish_batch_pomija_niekompletna_pozycje_bez_probowania_olx(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Brak tytulu/ceny -> skip do errors, NIE failed, i bez wywolania OLX."""
+    batch_id, item_ok = await _create_approved_item(db_session)
+    item_incomplete = await _add_item(
+        db_session, batch_id, 2, status="pending", title=None, price_pln=None
+    )
+
+    monkeypatch.setattr(intake.olx, "get_access_token", AsyncMock(return_value="AT-1"))
+    create_advert = AsyncMock(return_value={"id": 111, "status": "new"})
+    monkeypatch.setattr(intake.olx, "create_advert", create_advert)
+    monkeypatch.setattr(intake.asyncio, "sleep", AsyncMock())
+
+    result = await intake.publish_batch(db_session, batch_id)
+
+    assert result.published == 1
+    assert result.failed == 0
+    assert result.skipped == 1
+    assert result.errors == [(item_incomplete, "Pominieto: brak tytulu lub ceny.")]
+    create_advert.assert_called_once()
+
+    status = (
+        await db_session.execute(
+            text("SELECT status::TEXT FROM intake_item WHERE id = :id"),
+            {"id": item_incomplete},
+        )
+    ).scalar_one()
+    assert status == "pending"
 
 
 async def test_publish_batch_kontynuuje_po_pojedynczym_bledzie(

@@ -1288,6 +1288,12 @@ async def approve_and_publish(session: AsyncSession, item_id: int) -> IntakeItem
     pending -> approved -> published zostaje mimo to zapisane w bazie
     (sciezka audytu) - to dwie transakcje, nie jedna atomowa.
 
+    `approve_item` wymaga statusu 'pending' (patrz jej docstring), wiec
+    pozycje juz zatwierdzone wczesniej (istnieja z pracy sprzed merge'a
+    "Zatwierdz"+"Publikuj" w jeden przycisk - Publikuj jest dla nich widoczne
+    na karcie i w `publish_batch`) omijaja ten krok i ida wprost do
+    `publish_item`, zamiast rzucac blad o zlym statusie.
+
     Zero duplikacji logiki: `approve_item`/`publish_item` zostaja nietkniete
     i nadal sa uzywane bezposrednio przez JSON API (POST .../approve,
     POST .../publish) oraz `publish_batch`.
@@ -1322,7 +1328,8 @@ async def approve_and_publish(session: AsyncSession, item_id: int) -> IntakeItem
             f"{detail} - nie mozna opublikowac ponownie."
         )
 
-    await approve_item(session, item_id)
+    if current.status == "pending":
+        await approve_item(session, item_id)
     return await publish_item(session, item_id)
 
 
@@ -1387,7 +1394,8 @@ class BulkPublishResult(BaseModel):
     Attributes:
         published: Liczba pozycji opublikowanych pomyslnie.
         failed: Liczba pozycji, ktorych publikacja sie nie powiodla.
-        skipped: Liczba pozycji pominietych, bo nie mialy statusu 'approved'.
+        skipped: Liczba pozycji pominietych - status inny niz
+            'pending'/'approved', albo brak tytulu/ceny.
         aborted: Czy przebieg zostal przerwany przez circuit breaker (3
             bledy pod rzad).
         errors: Pary (item_id, komunikat bledu) dla nieudanych pozycji, w
@@ -1406,7 +1414,12 @@ _BULK_PUBLISH_CIRCUIT_BREAKER_THRESHOLD = 3
 
 
 async def publish_batch(session: AsyncSession, batch_id: int) -> BulkPublishResult:
-    """Publikuje sekwencyjnie wszystkie zatwierdzone pozycje partii na OLX.
+    """Zatwierdza i publikuje sekwencyjnie wszystkie gotowe pozycje partii na OLX.
+
+    Obejmuje pozycje w statusie 'pending' i 'approved' - odkad "Zatwierdz"
+    przestalo byc osobnym krokiem operatora (`approve_and_publish`), masowa
+    publikacja musi rowniez zatwierdzac pozycje w locie, nie tylko juz
+    zatwierdzone.
 
     SEKWENCYJNIE - celowo bez jakiejkolwiek wspolbieznosci (zaden
     asyncio.gather/TaskGroup). OLX rotuje refresh token przy kazdym
@@ -1418,19 +1431,26 @@ async def publish_batch(session: AsyncSession, batch_id: int) -> BulkPublishResu
     obcego API (limit OLX 4500 zadan/5 min nie jest zagrozony: 150 gier to
     ok. 3% limitu).
 
-    Blad pojedynczej pozycji jest lapany, logowany (`logger.exception`) i
-    zapisywany do wyniku - NIE przerywa przebiegu, bo jedna wadliwa
-    pozycja nie moze zablokowac calej partii. Trzy bledy POD RZAD
-    uruchamiaja circuit breaker: przebieg jest przerywany (`aborted=True`)
-    zamiast probowac pozostale pozycje, bo seria bledow zwykle oznacza
-    problem systemowy (wygasla autoryzacja, zla konfiguracja), a nie wade
+    Pozycja bez tytulu/ceny jest POMIJANA (liczona w `skipped`, z wpisem w
+    `errors`), a NIE probowana i liczona jako `failed` - brak tych danych
+    jest wada danych tej jednej pozycji (do poprawienia recznie na karcie),
+    nie objawem problemu systemowego, wiec nie powinna zuzywac proby ani
+    wplywac na circuit breaker.
+
+    Kazdy inny blad pojedynczej pozycji (walidacja platformy/kategorii OLX,
+    blad API OLX) jest lapany, logowany (`logger.exception`) i zapisywany do
+    wyniku jako `failed` - NIE przerywa przebiegu, bo jedna wadliwa pozycja
+    nie moze zablokowac calej partii. Trzy takie bledy POD RZAD uruchamiaja
+    circuit breaker: przebieg jest przerywany (`aborted=True`) zamiast
+    probowac pozostale pozycje, bo seria bledow zwykle oznacza problem
+    systemowy (wygasla autoryzacja, zla konfiguracja), a nie wade
     pojedynczej pozycji - dobijanie reszty tworzyloby tylko kolejne
     nieudane proby na produkcyjnym API OLX (OLX nie ma srodowiska
     testowego).
 
-    Wywoluje `publish_item` per pozycja - zero duplikacji logiki
-    publikacji, promocji do `game`/`listing`/`listing_photo` i mapowania
-    statusu OLX.
+    Wywoluje `approve_and_publish` per pozycja - zero duplikacji logiki
+    zatwierdzania, publikacji, promocji do `game`/`listing`/`listing_photo`
+    i mapowania statusu OLX.
 
     Args:
         session: Sesja bazy danych.
@@ -1448,7 +1468,7 @@ async def publish_batch(session: AsyncSession, batch_id: int) -> BulkPublishResu
     rows = (
         await session.execute(
             text(
-                "SELECT id, status::TEXT FROM intake_item "
+                "SELECT id, status::TEXT, title, price_pln FROM intake_item "
                 "WHERE batch_id = :batch_id ORDER BY position"
             ),
             {"batch_id": batch_id},
@@ -1461,9 +1481,13 @@ async def publish_batch(session: AsyncSession, batch_id: int) -> BulkPublishResu
     aborted = False
     errors: list[tuple[int, str]] = []
 
-    for item_id, item_status in rows:
-        if item_status != "approved":
+    for item_id, item_status, title, price_pln in rows:
+        if item_status not in ("pending", "approved"):
             skipped += 1
+            continue
+        if not title or price_pln is None:
+            skipped += 1
+            errors.append((item_id, "Pominieto: brak tytulu lub ceny."))
             continue
 
         if attempted > 0:
@@ -1471,7 +1495,7 @@ async def publish_batch(session: AsyncSession, batch_id: int) -> BulkPublishResu
         attempted += 1
 
         try:
-            await publish_item(session, item_id)
+            await approve_and_publish(session, item_id)
         except Exception as exc:
             logger.exception(
                 "Publikacja pozycji %s w partii %s (masowa publikacja) "
@@ -1503,9 +1527,10 @@ async def publish_progress(session: AsyncSession, batch_id: int) -> tuple[int, i
 
     Liczony wylacznie z bazy (bez stanu w pamieci procesu) - pozycje juz
     opublikowane wzgledem wszystkich pozycji, ktore sa (albo byly, zanim
-    zostaly opublikowane) zatwierdzone w tej partii. `publish_item`
-    zmienia status pozycji z 'approved' na 'published' dopiero po udanym
-    zapisie, wiec ten iloraz rosnie w miare przebiegu `publish_batch`.
+    zostaly opublikowane) w zasiegu `publish_batch` (pending/approved) w tej
+    partii. `approve_and_publish` zmienia status pozycji na 'published'
+    dopiero po udanym zapisie, wiec ten iloraz rosnie w miare przebiegu
+    `publish_batch`.
 
     Args:
         session: Sesja bazy danych.
@@ -1513,13 +1538,15 @@ async def publish_progress(session: AsyncSession, batch_id: int) -> tuple[int, i
 
     Returns:
         Krotke (opublikowane, wszystkie): liczba pozycji ze statusem
-        'published' i suma pozycji 'published' + 'approved' w partii.
+        'published' i suma pozycji 'published' + 'approved' + 'pending' w
+        partii.
     """
     row = (
         await session.execute(
             text(
                 "SELECT count(*) FILTER (WHERE status = 'published'), "
-                "count(*) FILTER (WHERE status IN ('published', 'approved')) "
+                "count(*) FILTER (WHERE status IN "
+                "('published', 'approved', 'pending')) "
                 "FROM intake_item WHERE batch_id = :batch_id"
             ),
             {"batch_id": batch_id},

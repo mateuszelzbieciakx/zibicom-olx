@@ -16,7 +16,7 @@
 {% if not extracting %}
 {% if publishing %}
 {% include "partials/batch_publish_progress.html" %}
-{% elif approved_count %}
+{% elif publishable_count %}
 {% include "partials/batch_publish_button.html" %}
 {% endif %}
 {% endif %}

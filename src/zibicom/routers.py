@@ -310,12 +310,13 @@ async def preview_publish_item(item_id: int, session: SessionDep) -> dict[str, A
     tags=["intake"],
 )
 async def publish_batch(batch_id: int, session: SessionDep) -> intake.BulkPublishResult:
-    """Publikuje sekwencyjnie wszystkie zatwierdzone pozycje partii na OLX.
+    """Zatwierdza i publikuje sekwencyjnie wszystkie gotowe pozycje partii na OLX.
 
-    Sekwencyjnie i z pauza miedzy probami (`intake.publish_batch`) - patrz
-    tamten docstring o rotacji refresh tokenu OLX. Blad pojedynczej pozycji
-    nie przerywa przebiegu; seria 3 bledow pod rzad uruchamia circuit
-    breaker (`aborted=True` w odpowiedzi).
+    Obejmuje pozycje w statusie 'pending' i 'approved'. Sekwencyjnie i z
+    pauza miedzy probami (`intake.publish_batch`) - patrz tamten docstring
+    o rotacji refresh tokenu OLX. Blad pojedynczej pozycji nie przerywa
+    przebiegu; seria 3 bledow pod rzad uruchamia circuit breaker
+    (`aborted=True` w odpowiedzi).
     """
     try:
         return await intake.publish_batch(session, batch_id)

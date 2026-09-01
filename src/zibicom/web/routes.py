@@ -193,7 +193,9 @@ async def batch_detail(
     items = await intake.list_items(session, batch_id)
     extracting = batch_id in _running
     publishing = batch_id in _running_publish
-    approved_count = sum(1 for item in items if item.status == "approved")
+    publishable_count = sum(
+        1 for item in items if item.status in ("pending", "approved")
+    )
     batch_status = await _batch_status(session, batch_id)
     context: dict[str, object] = {
         "batch_id": batch_id,
@@ -202,7 +204,7 @@ async def batch_detail(
         "platforms": await intake.list_platforms(session),
         "extracting": extracting,
         "publishing": publishing,
-        "approved_count": approved_count,
+        "publishable_count": publishable_count,
         "batch_status": batch_status,
         "extraction_error": None,
     }
@@ -351,9 +353,10 @@ async def batch_publish_progress(
     Zakonczona -> podsumowanie przebiegu (`_publish_results`, zdjete z
     rejestru - jednorazowe) razem z odswiezonymi kartami pozycji (OOB
     swap `#batch-items`, bo statusy pozycji sie zmienily) i przyciskiem
-    "Publikuj wszystko" ponownie, jesli zostaly jeszcze pozycje approved
-    (czesciowe niepowodzenie albo przerwanie circuit breakerem). Bez
-    `hx-trigger` w zadnej z tych galezi -> poling zatrzymuje sie sam.
+    "Publikuj wszystkie" ponownie, jesli zostaly jeszcze pozycje
+    pending/approved (czesciowe niepowodzenie albo przerwanie circuit
+    breakerem). Bez `hx-trigger` w zadnej z tych galezi -> poling
+    zatrzymuje sie sam.
     """
     if batch_id in _running_publish:
         done, total = await intake.publish_progress(session, batch_id)
@@ -364,7 +367,9 @@ async def batch_publish_progress(
         )
     result = _publish_results.pop(batch_id, None)
     items = await intake.list_items(session, batch_id)
-    approved_count = sum(1 for item in items if item.status == "approved")
+    publishable_count = sum(
+        1 for item in items if item.status in ("pending", "approved")
+    )
     return templates.TemplateResponse(
         request=request,
         name="partials/batch_publish_result.html",
@@ -373,7 +378,7 @@ async def batch_publish_progress(
             "result": result,
             "items": items,
             "platforms": await intake.list_platforms(session),
-            "approved_count": approved_count,
+            "publishable_count": publishable_count,
             "oob": True,
         },
     )
