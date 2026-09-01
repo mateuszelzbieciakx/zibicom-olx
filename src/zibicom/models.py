@@ -1,4 +1,4 @@
-"""Modele Pydantic dla wynikow rozpoznawania zdjec gier przez Gemini."""
+"""Modele Pydantic dla wyników rozpoznawania zdjęć gier przez Gemini."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ PRICE_MAX_PLN = Decimal("2000")
 
 
 class PlatformCode(StrEnum):
-    """Kody platform zgodne z kolumna platform.code w bazie danych."""
+    """Kody platform zgodne z kolumną platform.code w bazie danych."""
 
     PS1 = "ps1"
     PS2 = "ps2"
@@ -32,26 +32,26 @@ class PlatformCode(StrEnum):
 
 
 class PhotoExtraction(BaseModel):
-    """Wynik rozpoznania JEDNEGO zdjecia egzemplarza przez Gemini.
+    """Wynik rozpoznania JEDNEGO zdjęcia egzemplarza przez Gemini.
 
-    Tytul i cena maja OSOBNE flagi pewnosci (title_confident, price_confident)
-    zamiast jednej wspolnej - to dwa rozne typy bledow (zle odczytany napis
-    kontra zle odczytana liczba na cenowce) i osoba zatwierdzajaca oferte
+    Tytuł i cena mają OSOBNE flagi pewności (title_confident, price_confident)
+    zamiast jednej wspólnej - to dwa różne typy błędów (źle odczytany napis
+    kontra źle odczytana liczba na cenówce) i osoba zatwierdzająca ofertę
     weryfikuje je inaczej.
 
     Attributes:
-        title: Tytul gry odczytany z okladki, albo None gdy nieczytelny.
+        title: Tytuł gry odczytany z okładki, albo None gdy nieczytelny.
         platform: Kod platformy rozpoznany z logo/oprawy graficznej;
-            "other", gdy nie da sie jej jednoznacznie ustalic.
+            "other", gdy nie da się jej jednoznacznie ustalić.
         platform_other: Opisowa nazwa platformy, gdy platform == "other".
-        price_pln: Cena z naklejonej cenowki w PLN, albo None gdy
+        price_pln: Cena z naklejonej cenówki w PLN, albo None gdy
             nieczytelna lub niewiarygodna.
         condition: Stan egzemplarza ("new"/"used"), albo None gdy nieznany.
-        is_front: Czy zdjecie przedstawia glowna okladke (przod pudelka);
+        is_front: Czy zdjęcie przedstawia główną okładkę (przód pudełka);
             None, gdy model nie jest pewien.
-        title_confident: Czy tytul zostal odczytany bez watpliwosci.
-        price_confident: Czy cena zostala odczytana bez watpliwosci.
-        note: Krotka uwaga po polsku (np. powod niepewnosci lub bledu API).
+        title_confident: Czy tytuł został odczytany bez wątpliwości.
+        price_confident: Czy cena została odczytana bez wątpliwości.
+        note: Krótka uwaga po polsku (np. powód niepewności lub błędu API).
     """
 
     title: str | None = None
@@ -67,13 +67,13 @@ class PhotoExtraction(BaseModel):
     @field_validator("price_pln")
     @classmethod
     def _odrzuc_niewiarygodna_cene(cls, value: Decimal | None) -> Decimal | None:
-        """Odrzuca jako bledny odczyt ceny spoza sensownego zakresu sklepu.
+        """Odrzuca jako błędny odczyt ceny spoza sensownego zakresu sklepu.
 
         Args:
-            value: Cena zwrocona przez model rozpoznajacy (moze byc None).
+            value: Cena zwrócona przez model rozpoznający (może być None).
 
         Returns:
-            Cene bez zmian, gdy miesci sie w przedziale (0, 2000] PLN, w
+            Cenę bez zmian, gdy mieści się w przedziale (0, 2000] PLN, w
             przeciwnym razie None.
         """
         if value is None:

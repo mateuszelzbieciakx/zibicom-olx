@@ -1,4 +1,4 @@
-"""Konfiguracja aplikacji czytana z sekretow Dockera oraz z pliku .env."""
+"""Konfiguracja aplikacji czytana z sekretów Dockera oraz z pliku .env."""
 
 from functools import lru_cache, partial
 from pathlib import Path
@@ -12,13 +12,13 @@ LOCAL_SECRETS_DIR = Path(__file__).resolve().parents[2] / "secrets"
 
 
 def _secrets_dir() -> str | None:
-    """Zwraca katalog sekretow Dockera, jesli istnieje.
+    """Zwraca katalog sekretów Dockera, jeśli istnieje.
 
-    Pydantic-settings ostrzega o nieistniejacym katalogu, a na Windowsie
-    /run/secrets nigdy nie istnieje - dlatego wybor jest dynamiczny.
+    Pydantic-settings ostrzega o nieistniejącym katalogu, a na Windowsie
+    /run/secrets nigdy nie istnieje - dlatego wybór jest dynamiczny.
 
     Returns:
-        Sciezka do katalogu sekretow albo None, gdy dzialamy poza Dockerem.
+        Ścieżka do katalogu sekretów albo None, gdy działamy poza Dockerem.
     """
     return str(DOCKER_SECRETS_DIR) if DOCKER_SECRETS_DIR.is_dir() else None
 
@@ -26,16 +26,16 @@ def _secrets_dir() -> str | None:
 def _read_local_secret(name: str) -> SecretStr:
     """Czyta sekret z lokalnego pliku secrets/<name>.txt poza Dockerem.
 
-    Sluzy jako wartosc domyslna pola - jesli sekret przyjdzie z
-    /run/secrets (wyzszy priorytet zrodel pydantic-settings), ta funkcja
-    w ogole sie nie wykona. Uzywane przy uruchamianiu aplikacji lub
-    skryptow bezposrednio na hoscie (poza kontenerem Dockera).
+    Służy jako wartość domyślna pola - jeśli sekret przyjdzie z
+    /run/secrets (wyższy priorytet źródeł pydantic-settings), ta funkcja
+    w ogóle się nie wykona. Używane przy uruchamianiu aplikacji lub
+    skryptów bezpośrednio na hoście (poza kontenerem Dockera).
 
     Args:
         name: Nazwa pliku sekretu bez rozszerzenia, np. "r2_access_key_id".
 
     Returns:
-        Zawartosc pliku secrets/<name>.txt jako SecretStr, albo pusty
+        Zawartość pliku secrets/<name>.txt jako SecretStr, albo pusty
         SecretStr, gdy plik nie istnieje.
     """
     path = LOCAL_SECRETS_DIR / f"{name}.txt"
@@ -47,49 +47,49 @@ def _read_local_secret(name: str) -> SecretStr:
 class Settings(BaseSettings):
     """Ustawienia aplikacji.
 
-    Kolejnosc zrodel (od najwazniejszego): zmienne srodowiskowe, plik .env,
-    pliki w /run/secrets. Dzieki temu ten sam kod dziala lokalnie na Windowsie
+    Kolejność źródeł (od najważniejszego): zmienne środowiskowe, plik .env,
+    pliki w /run/secrets. Dzięki temu ten sam kod działa lokalnie na Windowsie
     i w kontenerze na VPS.
 
     Attributes:
-        app_env: Nazwa srodowiska (local, staging, production).
+        app_env: Nazwa środowiska (local, staging, production).
         log_level: Poziom logowania przekazywany do loggera aplikacji.
-        api_host: Interfejs, na ktorym nasluchuje serwer HTTP.
+        api_host: Interfejs, na którym nasłuchuje serwer HTTP.
         api_port: Port serwera HTTP.
         postgres_host: Host bazy danych.
         postgres_port: Port bazy danych.
         postgres_db: Nazwa bazy danych.
-        postgres_user: Uzytkownik bazy danych.
-        postgres_password: Haslo bazy danych (sekret).
-        db_pool_size: Rozmiar puli polaczen SQLAlchemy.
-        db_connect_timeout: Limit sekund na nawiazanie polaczenia z baza.
-        db_echo: Czy logowac zapytania SQL.
+        postgres_user: Użytkownik bazy danych.
+        postgres_password: Hasło bazy danych (sekret).
+        db_pool_size: Rozmiar puli połączeń SQLAlchemy.
+        db_connect_timeout: Limit sekund na nawiązanie połączenia z bazą.
+        db_echo: Czy logować zapytania SQL.
         r2_endpoint: Endpoint S3 API konta Cloudflare R2.
-        r2_bucket: Nazwa bucketu R2 ze zdjeciami ofert.
-        r2_public_base_url: Publiczny adres, pod ktorym OLX pobiera zdjecia.
-        r2_access_key_id: Identyfikator klucza dostepowego R2 (sekret).
-        r2_secret_access_key: Sekretny klucz dostepowy R2 (sekret).
+        r2_bucket: Nazwa bucketu R2 ze zdjęciami ofert.
+        r2_public_base_url: Publiczny adres, pod którym OLX pobiera zdjęcia.
+        r2_access_key_id: Identyfikator klucza dostępowego R2 (sekret).
+        r2_secret_access_key: Sekretny klucz dostępowy R2 (sekret).
         gemini_api_key: Klucz API Gemini (sekret).
-        gemini_model: Nazwa modelu Gemini uzywanego do rozpoznawania zdjec.
+        gemini_model: Nazwa modelu Gemini używanego do rozpoznawania zdjęć.
         olx_client_id: Identyfikator aplikacji OLX Partner API (sekret).
         olx_client_secret: Sekret aplikacji OLX Partner API (sekret).
         olx_redirect_uri: Callback URI zarejestrowany w aplikacji OLX.
-            Bez dzialajacego endpointu (OLX nie akceptuje localhost) -
-            autoryzacja jest polreczna, patrz zibicom.olx.
-        olx_auth_base_url: Host, pod ktorym OLX obsluguje logowanie OAuth.
+            Bez działającego endpointu (OLX nie akceptuje localhost) -
+            autoryzacja jest półręczna, patrz zibicom.olx.
+        olx_auth_base_url: Host, pod którym OLX obsługuje logowanie OAuth.
         olx_api_base_url: Baza REST API OLX Partner (kategorie, miasta,
-            ogloszenia) oraz wymiana/odswiezenie tokenu.
-        olx_city_id: Domyslne miasto OLX dla publikowanych ofert
-            (0 = nieustawione, trzeba wybrac przez /api/olx/cities).
-        olx_district_id: Domyslna dzielnica OLX dla publikowanych ofert
+            ogłoszenia) oraz wymiana/odświeżenie tokenu.
+        olx_city_id: Domyślne miasto OLX dla publikowanych ofert
+            (0 = nieustawione, trzeba wybrać przez /api/olx/cities).
+        olx_district_id: Domyślna dzielnica OLX dla publikowanych ofert
             (0 = nieustawiona - w payloadzie pomijana, patrz
             build_advert_payload). Wymagana przez OLX TYLKO dla miast z
-            podzialem na dzielnice (np. Krakow) - male miejscowosci go nie
-            maja; wybierz przez /api/olx/cities/{city_id}/districts.
-        olx_contact_name: Nazwa kontaktowa wyswietlana w ogloszeniu OLX
+            podziałem na dzielnice (np. Kraków) - małe miejscowości go nie
+            mają; wybierz przez /api/olx/cities/{city_id}/districts.
+        olx_contact_name: Nazwa kontaktowa wyświetlana w ogłoszeniu OLX
             (pole "contact.name" wymagane przez Partner API).
-        token_encryption_key: Klucz Fernet do szyfrowania tokenow OLX w
-            bazie (sekret). Nie moze trafic do bazy - patrz
+        token_encryption_key: Klucz Fernet do szyfrowania tokenów OLX w
+            bazie (sekret). Nie może trafić do bazy - patrz
             migrations/0004_olx_token.sql.
     """
 
@@ -159,7 +159,7 @@ class Settings(BaseSettings):
         """Buduje asynchroniczny DSN dla SQLAlchemy (driver psycopg 3).
 
         Returns:
-            DSN w formacie postgresql+psycopg://user:haslo@host:port/baza.
+            DSN w formacie postgresql+psycopg://user:hasło@host:port/baza.
         """
         password = quote(self.postgres_password.get_secret_value(), safe="")
         user = quote(self.postgres_user, safe="")
@@ -171,9 +171,9 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    """Zwraca zbuforowana instancje ustawien.
+    """Zwraca zbuforowaną instancję ustawień.
 
     Returns:
-        Jedna, wspoldzielona instancja Settings dla calego procesu.
+        Jedna, współdzielona instancja Settings dla całego procesu.
     """
     return Settings()

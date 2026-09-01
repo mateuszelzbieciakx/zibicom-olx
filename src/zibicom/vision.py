@@ -1,9 +1,9 @@
-"""Rozpoznawanie egzemplarzy gier na zdjeciach przez Gemini.
+"""Rozpoznawanie egzemplarzy gier na zdjęciach przez Gemini.
 
-Z produkcyjnego doswiadczenia z poprzedniej wersji narzedzia: model
-najczesciej mylil sie w CENIE, czasem w TYTULE. Dlatego prompt wymusza
-przyznanie sie do niepewnosci (null + odpowiednia flaga *_confident)
-zamiast zgadywania - niepewne pozycje sa potem podswietlane w widoku
+Z produkcyjnego doświadczenia z poprzedniej wersji narzędzia: model
+najczęściej mylił się w CENIE, czasem w TYTULE. Dlatego prompt wymusza
+przyznanie się do niepewności (null + odpowiednia flaga *_confident)
+zamiast zgadywania - niepewne pozycje są potem podświetlane w widoku
 zatwierdzania ofert.
 """
 
@@ -28,57 +28,57 @@ RETRY_DELAY_SECONDS = 10.0
 GEMINI_FREE_TIER_DAILY_LIMIT = 20
 
 PROMPT = """\
-Jestes ekspertem od gier wideo. Na zdjeciu jest jeden fizyczny egzemplarz
-gry (pudelko/karton) ze sklepu z uzywanymi grami. Wypelnij podany schemat
-JSON. Kazde pole wypelniaj OSTROZNIE - brak informacji to zawsze null,
-NIGDY zgadywanie. Lepiej przyznac sie do niepewnosci (ustawiajac
-odpowiednia flage *_confident na false albo zwracajac null), niz podac
-bledna wartosc.
+Jesteś ekspertem od gier wideo. Na zdjęciu jest jeden fizyczny egzemplarz
+gry (pudełko/karton) ze sklepu z używanymi grami. Wypełnij podany schemat
+JSON. Każde pole wypełniaj OSTROŻNIE - brak informacji to zawsze null,
+NIGDY zgadywanie. Lepiej przyznać się do niepewności (ustawiając
+odpowiednią flagę *_confident na false albo zwracając null), niż podać
+błędną wartość.
 
 CENA (price_pln, price_confident):
-- Odczytaj WYLACZNIE liczbe z naklejonej na pudelko cenowki.
-- NIGDY nie zgaduj ceny na podstawie tytulu gry, jej popularnosci ani
-  wartosci rynkowej - to najczestszy blad z poprzednich uruchomien.
-- Jesli cenowka jest zaslonieta, rozmyta, ucieta lub w ogole niewidoczna,
-  zwroc price_pln=null i price_confident=false. Lepszy brak ceny niz cena
-  zmyslona.
+- Odczytaj WYŁĄCZNIE liczbę z naklejonej na pudełko cenówki.
+- NIGDY nie zgaduj ceny na podstawie tytułu gry, jej popularności ani
+  wartości rynkowej - to najczęstszy błąd z poprzednich uruchomień.
+- Jeśli cenówka jest zasłonięta, rozmyta, ucięta lub w ogóle niewidoczna,
+  zwróć price_pln=null i price_confident=false. Lepszy brak ceny niż cena
+  zmyślona.
 
 STAN (condition):
-- 'new' TYLKO wtedy, gdy pudelko jest w oryginalnej folii LUB cenowka jest
-  POMARANCZOWA.
-- Biala cenowka oznacza 'used'.
-- W razie jakichkolwiek watpliwosci wybierz 'used' - nowe egzemplarze sa
-  rzadkie, a opisanie uzywanej gry jako nowej to podstawa do reklamacji.
+- 'new' TYLKO wtedy, gdy pudełko jest w oryginalnej folii LUB cenówka jest
+  POMARAŃCZOWA.
+- Biała cenówka oznacza 'used'.
+- W razie jakichkolwiek wątpliwości wybierz 'used' - nowe egzemplarze są
+  rzadkie, a opisanie używanej gry jako nowej to podstawa do reklamacji.
 
-TYTUL (title, title_confident):
-- Przepisz dokladnie tak, jak jest na okladce.
-- BEZ nazwy platformy (np. "PS4", "Xbox") i bez dopiskow typu "PL",
-  "Edycja Gry Roku", "Edycja Specjalna" - to nie jest czesc tytulu.
+TYTUŁ (title, title_confident):
+- Przepisz dokładnie tak, jak jest na okładce.
+- BEZ nazwy platformy (np. "PS4", "Xbox") i bez dopisków typu "PL",
+  "Edycja Gry Roku", "Edycja Specjalna" - to nie jest część tytułu.
 - Przy podobnych wydaniach tej samej serii (np. kolejne roczniki gry
-  sportowej, remastery), gdzie latwo pomylic konkretna edycje, ustaw
-  title_confident=false, nawet jesli jakis tytul podajesz.
+  sportowej, remastery), gdzie łatwo pomylić konkretną edycję, ustaw
+  title_confident=false, nawet jeśli jakiś tytuł podajesz.
 
 PLATFORMA (platform, platform_other):
-- Rozpoznaj po logo producenta i oprawie graficznej pudelka.
-- Gry na PC nie wystepuja w tym sklepie - nie uzywaj tej opcji.
-- Uwaga na kompatybilnosc wsteczna: plyta z napisem "PS4", ktora dziala
-  tez na PS5, to platform=ps4_ps5. Gra WYLACZNIE na PS5 (np. z napisem
-  "PS5" lub "wylacznie na PS5") to platform=ps5. Analogicznie
-  platform=xboxone_sx (plyta Xbox One dzialajaca tez na Series X/S) vs
-  platform=xboxsx (gra wylacznie na Series X/S), oraz platform=switch1_2
-  (dziala na obu) vs platform=switch2 (wylacznie Switch 2).
-- Jesli platformy nie da sie ustalic albo nie pasuje do zadnego z kodow,
-  ustaw platform=other i krotko opisz co widac w platform_other.
+- Rozpoznaj po logo producenta i oprawie graficznej pudełka.
+- Gry na PC nie występują w tym sklepie - nie używaj tej opcji.
+- Uwaga na kompatybilność wsteczną: płyta z napisem "PS4", która działa
+  też na PS5, to platform=ps4_ps5. Gra WYŁĄCZNIE na PS5 (np. z napisem
+  "PS5" lub "wyłącznie na PS5") to platform=ps5. Analogicznie
+  platform=xboxone_sx (płyta Xbox One działająca też na Series X/S) vs
+  platform=xboxsx (gra wyłącznie na Series X/S), oraz platform=switch1_2
+  (działa na obu) vs platform=switch2 (wyłącznie Switch 2).
+- Jeśli platformy nie da się ustalić albo nie pasuje do żadnego z kodów,
+  ustaw platform=other i krótko opisz co widać w platform_other.
 
 IS_FRONT:
-- true TYLKO dla glownej okladki: duza grafika i tytul gry.
-- Tyl pudelka (opis, logo PEGI, kod kreskowy) i wnetrze (np. plyta,
+- true TYLKO dla głównej okładki: duża grafika i tytuł gry.
+- Tył pudełka (opis, logo PEGI, kod kreskowy) i wnętrze (np. płyta,
   instrukcja) to false.
-- Gdy nie jestes pewien, ktora to strona - zwroc null, nie zgaduj.
+- Gdy nie jesteś pewien, która to strona - zwróć null, nie zgaduj.
 
-NOTE: krotka uwaga po polsku, jesli cos jest niejasne (np. "cenowka
-czesciowo zaslonieta palcem", "mozliwy remaster, nie jestem pewien roku").
-Pozostaw null, jesli wszystko jest jasne.
+NOTE: krótka uwaga po polsku, jeśli coś jest niejasne (np. "cenówka
+częściowo zasłonięta palcem", "możliwy remaster, nie jestem pewien roku").
+Pozostaw null, jeśli wszystko jest jasne.
 """
 
 
@@ -86,17 +86,17 @@ Pozostaw null, jesli wszystko jest jasne.
 def _client() -> genai.Client:
     """Buduje (raz na proces) klienta Gemini na podstawie konfiguracji aplikacji.
 
-    Klient google-genai trzyma pod spodem wspoldzielony transport httpx.
-    Tworzenie nowej instancji przy kazdym wywolaniu prowadzi do sytuacji, w
-    ktorej GC zbiera porzucona instancje i zamyka jej transport - kolejne
-    zadania (np. rozpoznawanie kolejnych zdjec partii w tym samym procesie)
-    trafiaja wtedy na zamkniete polaczenie ("Cannot send a request, as the
-    client has been closed"). `lru_cache` bez argumentow trzyma jedna,
-    wspoldzielona instancje przez caly czas zycia procesu - klient
-    google-genai jest bezpieczny do wielokrotnego uzycia.
+    Klient google-genai trzyma pod spodem współdzielony transport httpx.
+    Tworzenie nowej instancji przy każdym wywołaniu prowadzi do sytuacji, w
+    której GC zbiera porzuconą instancję i zamyka jej transport - kolejne
+    zadania (np. rozpoznawanie kolejnych zdjęć partii w tym samym procesie)
+    trafiają wtedy na zamknięte połączenie ("Cannot send a request, as the
+    client has been closed"). `lru_cache` bez argumentów trzyma jedną,
+    współdzieloną instancję przez cały czas życia procesu - klient
+    google-genai jest bezpieczny do wielokrotnego użycia.
 
     Returns:
-        Klient google-genai uwierzytelniony kluczem API z ustawien.
+        Klient google-genai uwierzytelniony kluczem API z ustawień.
     """
     settings = get_settings()
     return genai.Client(api_key=settings.gemini_api_key.get_secret_value())
@@ -105,26 +105,26 @@ def _client() -> genai.Client:
 class GeminiQuotaExceededError(Exception):
     """Wyczerpany dzienny limit darmowego tieru Gemini API.
 
-    W przeciwienstwie do przejsciowych bledow sieciowych, ponawianie proby
-    nic tu nie da - limit odnawia sie raz na dobe. Dlatego ten wyjatek NIE
-    jest wewnetrznie tlumiony (w odroznieniu od reszty bledow API) i
-    propaguje sie az do wywolujacego, przerywajac analize calej partii,
-    zamiast bic sie o limit przy kazdym kolejnym zdjeciu.
+    W przeciwieństwie do przejściowych błędów sieciowych, ponawianie próby
+    nic tu nie da - limit odnawia się raz na dobę. Dlatego ten wyjątek NIE
+    jest wewnętrznie tłumiony (w odróżnieniu od reszty błędów API) i
+    propaguje się aż do wywołującego, przerywając analizę całej partii,
+    zamiast bić się o limit przy każdym kolejnym zdjęciu.
     """
 
 
 def _failure_result(note: str) -> PhotoExtraction:
-    """Buduje wynik "nieudanego rozpoznania" o zerowej pewnosci.
+    """Buduje wynik "nieudanego rozpoznania" o zerowej pewności.
 
-    Jedno wadliwe zdjecie (blad sieci, limit API, niepoprawna odpowiedz)
-    nie moze wywrocic analizy calej partii - dlatego ta funkcja zwraca
-    bezpieczny obiekt zamiast pozwalac wyjatkowi propagowac sie wyzej.
+    Jedno wadliwe zdjęcie (błąd sieci, limit API, niepoprawna odpowiedź)
+    nie może wywrócić analizy całej partii - dlatego ta funkcja zwraca
+    bezpieczny obiekt zamiast pozwalać wyjątkowi propagować się wyżej.
 
     Args:
-        note: Krotki, czytelny opis tego, co poszlo nie tak.
+        note: Krótki, czytelny opis tego, co poszło nie tak.
 
     Returns:
-        PhotoExtraction z samymi wartosciami null/false i podana notatka.
+        PhotoExtraction z samymi wartościami null/false i podaną notatką.
     """
     return PhotoExtraction(
         title=None,
@@ -140,27 +140,27 @@ def _failure_result(note: str) -> PhotoExtraction:
 
 
 def _generate_content(image: Image.Image, model: str) -> types.GenerateContentResponse:
-    """Woli Gemini o rozpoznanie zdjecia, ponawiajac przejsciowe bledy.
+    """Woła Gemini o rozpoznanie zdjęcia, ponawiając przejściowe błędy.
 
-    Klientowski blad 429 (limit) NIE jest traktowany jako przejsciowy -
-    czekanie nic tu nie da (limit odnawia sie raz na dobe), wiec leci od
-    razu, bez zuzywania prob. Inne bledy klienta (4xx - np. zle zadanie)
-    tez nie sa ponawiane z tego samego powodu: sa deterministyczne, kolejna
-    proba zwroci to samo. Ponawiane sa wylacznie bledy przejsciowe (blad
-    serwera, przerwane polaczenie itp.) - do `RETRY_ATTEMPTS` prob,
-    z `RETRY_DELAY_SECONDS` przerwy miedzy nimi.
+    Kliencki błąd 429 (limit) NIE jest traktowany jako przejściowy -
+    czekanie nic tu nie da (limit odnawia się raz na dobę), więc leci od
+    razu, bez zużywania prób. Inne błędy klienta (4xx - np. złe żądanie)
+    też nie są ponawiane z tego samego powodu: są deterministyczne, kolejna
+    próba zwróci to samo. Ponawiane są wyłącznie błędy przejściowe (błąd
+    serwera, przerwane połączenie itp.) - do `RETRY_ATTEMPTS` prób,
+    z `RETRY_DELAY_SECONDS` przerwy między nimi.
 
     Args:
-        image: Znormalizowane zdjecie do rozpoznania.
+        image: Znormalizowane zdjęcie do rozpoznania.
         model: Nazwa modelu Gemini z konfiguracji.
 
     Returns:
-        Surowa odpowiedz Gemini.
+        Surowa odpowiedź Gemini.
 
     Raises:
-        GeminiQuotaExceededError: Gdy API zwrocilo 429 (dzienny limit).
-        errors.ClientError: Gdy API zwrocilo inny blad 4xx (nie ponawiane).
-        Exception: Ostatni napotkany blad, gdy wszystkie proby zawiodly.
+        GeminiQuotaExceededError: Gdy API zwróciło 429 (dzienny limit).
+        errors.ClientError: Gdy API zwróciło inny błąd 4xx (nie ponawiane).
+        Exception: Ostatni napotkany błąd, gdy wszystkie próby zawiodły.
     """
     last_exc: Exception
     for attempt in range(1, RETRY_ATTEMPTS + 1):
@@ -178,14 +178,14 @@ def _generate_content(image: Image.Image, model: str) -> types.GenerateContentRe
             if exc.code == 429:
                 raise GeminiQuotaExceededError(
                     "Wyczerpano dzienny limit darmowego tieru Gemini "
-                    f"({GEMINI_FREE_TIER_DAILY_LIMIT} zdjec/dobe). Wlacz platny "
-                    "tier w Google Cloud, zeby kontynuowac rozpoznawanie."
+                    f"({GEMINI_FREE_TIER_DAILY_LIMIT} zdjęć/dobę). Włącz płatny "
+                    "tier w Google Cloud, żeby kontynuować rozpoznawanie."
                 ) from exc
             raise
-        except Exception as exc:  # retry na kazdym innym (przejsciowym) bledzie
+        except Exception as exc:  # retry na każdym innym (przejściowym) błędzie
             last_exc = exc
             logger.warning(
-                "Wywolanie Gemini nie powiodlo sie (proba %d/%d): %s",
+                "Wywołanie Gemini nie powiodło się (próba %d/%d): %s",
                 attempt,
                 RETRY_ATTEMPTS,
                 exc,
@@ -197,23 +197,23 @@ def _generate_content(image: Image.Image, model: str) -> types.GenerateContentRe
 
 
 def recognize_photo(image_bytes: bytes) -> PhotoExtraction:
-    """Rozpoznaje jedno znormalizowane zdjecie JPEG przez Gemini.
+    """Rozpoznaje jedno znormalizowane zdjęcie JPEG przez Gemini.
 
     Args:
-        image_bytes: Bajty znormalizowanego zdjecia JPEG (patrz
+        image_bytes: Bajty znormalizowanego zdjęcia JPEG (patrz
             `zibicom.photos.normalize_photo`).
 
     Returns:
-        Wynik rozpoznania. Gdy wywolanie API sie nie powiedzie (po
-        wyczerpaniu prob) albo zwroci odpowiedz niezgodna ze schematem,
-        zwracany jest bezpieczny wynik z flagami pewnosci ustawionymi na
-        false i notatka opisujaca blad.
+        Wynik rozpoznania. Gdy wywołanie API się nie powiedzie (po
+        wyczerpaniu prób) albo zwróci odpowiedź niezgodną ze schematem,
+        zwracany jest bezpieczny wynik z flagami pewności ustawionymi na
+        false i notatką opisującą błąd.
 
     Raises:
         GeminiQuotaExceededError: Gdy wyczerpano dzienny limit darmowego
-            tieru Gemini - w odroznieniu od innych bledow, TEN wyjatek
-            propaguje sie az do wywolujacego, zeby przerwac analize calej
-            partii zamiast zderzac sie z limitem przy kazdym zdjeciu.
+            tieru Gemini - w odróżnieniu od innych błędów, TEN wyjątek
+            propaguje się aż do wywołującego, żeby przerwać analizę całej
+            partii zamiast zderzać się z limitem przy każdym zdjęciu.
     """
     settings = get_settings()
     image = Image.open(io.BytesIO(image_bytes))
@@ -223,18 +223,18 @@ def recognize_photo(image_bytes: bytes) -> PhotoExtraction:
     except GeminiQuotaExceededError:
         raise
     except Exception:
-        logger.exception("Wywolanie Gemini nie powiodlo sie.")
+        logger.exception("Wywołanie Gemini nie powiodło się.")
         return _failure_result(
-            "Blad wywolania Gemini - zdjecie wymaga recznej weryfikacji."
+            "Błąd wywołania Gemini - zdjęcie wymaga ręcznej weryfikacji."
         )
 
     parsed = response.parsed
     if not isinstance(parsed, PhotoExtraction):
         logger.error(
-            "Gemini zwrocilo odpowiedz niezgodna ze schematem: %r", response.text
+            "Gemini zwróciło odpowiedź niezgodną ze schematem: %r", response.text
         )
         return _failure_result(
-            "Nieprawidlowa odpowiedz Gemini - zdjecie wymaga recznej weryfikacji."
+            "Nieprawidłowa odpowiedź Gemini - zdjęcie wymaga ręcznej weryfikacji."
         )
 
     return parsed

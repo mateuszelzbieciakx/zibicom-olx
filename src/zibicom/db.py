@@ -15,7 +15,7 @@ from zibicom.config import get_settings
 
 
 class Base(DeclarativeBase):
-    """Wspolna klasa bazowa dla modeli ORM."""
+    """Wspólna klasa bazowa dla modeli ORM."""
 
 
 @lru_cache
@@ -23,7 +23,7 @@ def get_engine() -> AsyncEngine:
     """Tworzy (raz na proces) asynchroniczny silnik bazy danych.
 
     Returns:
-        Skonfigurowany AsyncEngine z pula polaczen.
+        Skonfigurowany AsyncEngine z pulą połączeń.
     """
     settings = get_settings()
     return create_async_engine(
@@ -31,15 +31,15 @@ def get_engine() -> AsyncEngine:
         echo=settings.db_echo,
         pool_size=settings.db_pool_size,
         pool_pre_ping=True,
-        # Bez limitu /health wisi w nieskonczonosc, gdy baza nie odpowiada
-        # (zapora odrzuca pakiety zamiast zwracac connection refused).
+        # Bez limitu /health wisi w nieskończoność, gdy baza nie odpowiada
+        # (zapora odrzuca pakiety zamiast zwracać connection refused).
         connect_args={"connect_timeout": settings.db_connect_timeout},
     )
 
 
 @lru_cache
 def get_sessionmaker() -> async_sessionmaker[AsyncSession]:
-    """Zwraca fabryke sesji zwiazana z silnikiem aplikacji.
+    """Zwraca fabrykę sesji związaną z silnikiem aplikacji.
 
     Returns:
         Fabryka sesji AsyncSession.
@@ -52,15 +52,15 @@ def get_sessionmaker() -> async_sessionmaker[AsyncSession]:
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:
-    """Zaleznosc FastAPI dostarczajaca sesje bazy danych.
+    """Zależność FastAPI dostarczająca sesję bazy danych.
 
     Yields:
-        Sesja zamykana automatycznie po obsludze zadania.
+        Sesja zamykana automatycznie po obsłudze żądania.
     """
     async with get_sessionmaker()() as session:
         yield session
 
 
 async def dispose_engine() -> None:
-    """Zamyka pule polaczen (wywolywane przy zamykaniu aplikacji)."""
+    """Zamyka pulę połączeń (wywoływane przy zamykaniu aplikacji)."""
     await get_engine().dispose()

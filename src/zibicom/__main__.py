@@ -1,8 +1,8 @@
 """Uruchamianie serwera: python -m zibicom.
 
-Osobny entrypoint istnieje z powodu Windowsa: uvicorn domyslnie wybiera tam
-ProactorEventLoop, na ktorym psycopg 3 nie potrafi pracowac. Zamiast polegac
-na przestarzalym API polityk petli (usuwane w Pythonie 3.16), wymuszamy
+Osobny entrypoint istnieje z powodu Windowsa: uvicorn domyślnie wybiera tam
+ProactorEventLoop, na którym psycopg 3 nie potrafi pracować. Zamiast polegać
+na przestarzałym API polityk pętli (usuwane w Pythonie 3.16), wymuszamy
 loop_factory przy starcie.
 """
 
@@ -18,13 +18,13 @@ from zibicom.config import get_settings
 def _loop_factory(
     config: uvicorn.Config,
 ) -> Callable[[], asyncio.AbstractEventLoop] | None:
-    """Dobiera fabryke petli zdarzen odpowiednia dla platformy.
+    """Dobiera fabrykę pętli zdarzeń odpowiednią dla platformy.
 
     Args:
-        config: Konfiguracja uvicorna, z ktorej bierzemy domyslna fabryke.
+        config: Konfiguracja uvicorna, z której bierzemy domyślną fabrykę.
 
     Returns:
-        SelectorEventLoop na Windowsie, w przeciwnym razie wybor uvicorna.
+        SelectorEventLoop na Windowsie, w przeciwnym razie wybór uvicorna.
     """
     if sys.platform == "win32":
         return asyncio.SelectorEventLoop
@@ -32,7 +32,7 @@ def _loop_factory(
 
 
 def main() -> None:
-    """Startuje serwer HTTP na podstawie ustawien aplikacji."""
+    """Startuje serwer HTTP na podstawie ustawień aplikacji."""
     settings = get_settings()
     config = uvicorn.Config(
         "zibicom.main:app",

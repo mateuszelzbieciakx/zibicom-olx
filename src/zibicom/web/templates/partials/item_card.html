@@ -25,7 +25,7 @@
                        value="{{ item.price_pln | int if item.price_pln is not none else '' }}"
                        class="w-24 border rounded px-2 py-1">
                 <select name="condition" class="border rounded px-2 py-1">
-                    <option value="used" {% if item.condition == 'used' %}selected{% endif %}>uzywana</option>
+                    <option value="used" {% if item.condition == 'used' %}selected{% endif %}>używana</option>
                     <option value="new" {% if item.condition == 'new' %}selected{% endif %}>nowa</option>
                 </select>
                 <select name="platform_id" class="border rounded px-2 py-1 flex-1">
@@ -36,10 +36,10 @@
                 </select>
             </div>
             {% else %}
-            <div class="font-medium">{{ item.title or "(brak tytulu)" }}</div>
+            <div class="font-medium">{{ item.title or "(brak tytułu)" }}</div>
             <div class="text-sm text-slate-600">
                 {{ item.platform_name or item.platform_other or "?" }} &middot;
-                {{ item.price_pln | int if item.price_pln is not none else "?" }} zl &middot;
+                {{ item.price_pln | int if item.price_pln is not none else "?" }} zł &middot;
                 {{ item.condition or "?" }}
             </div>
             {% endif %}
@@ -57,7 +57,7 @@
         </div>
 
         <div class="flex flex-col gap-2 w-32 shrink-0">
-            {# DECYZJA: "approved" ma byc read-only (ZADANIE 0, krok 2c) - #}
+            {# DECYZJA: "approved" ma być read-only (ZADANIE 0, krok 2c) - #}
             {# pola edycyjne i "Zapisz" tylko dla "pending". #}
             {% if item.status == "pending" %}
             <button type="submit"
@@ -69,9 +69,9 @@
             <button type="button"
                     hx-post="/ui/items/{{ item.id }}/reject"
                     hx-target="#item-{{ item.id }}" hx-swap="outerHTML"
-                    hx-confirm="Odrzucic pozycje?"
+                    hx-confirm="Odrzucić pozycję?"
                     class="px-3 py-1 border rounded text-sm text-slate-500">
-                Odrzuc
+                Odrzuć
             </button>
             {% endif %}
             {% if item.status in ("pending", "approved") %}

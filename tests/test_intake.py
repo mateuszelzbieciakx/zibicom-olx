@@ -327,7 +327,7 @@ async def test_extract_batch_blad_pojedynczego_zdjecia_nie_przerywa_partii(
     items = await intake.list_items(db_session, batch_id)
     assert len(items) == 1
     assert items[0].title is None
-    assert "brak tytulu" in (items[0].ai_warning or "")
+    assert "brak tytułu" in (items[0].ai_warning or "")
 
     status = (
         await db_session.execute(
@@ -346,7 +346,7 @@ async def test_extract_batch_blad_pojedynczego_zdjecia_nie_przerywa_partii(
             {"batch_id": batch_id},
         )
     ).all()
-    assert all("Blad rozpoznania" in row[0] for row in ai_raw_notes)
+    assert all("Błąd rozpoznania" in row[0] for row in ai_raw_notes)
 
 
 # --------------------------------------------------------------------------
@@ -439,7 +439,7 @@ async def test_approve_item_bez_tytulu_i_ceny_rzuca_czytelny_blad(
 ) -> None:
     _, item_id = await _create_item(db_session, title=None, price_pln=None)
 
-    with pytest.raises(intake.IntakeValidationError, match="tytulu"):
+    with pytest.raises(intake.IntakeValidationError, match="tytułu"):
         await intake.approve_item(db_session, item_id)
 
 
@@ -898,7 +898,7 @@ async def test_approve_and_publish_bez_tytulu_i_ceny_rzuca_czytelny_blad(
 ) -> None:
     _, item_id = await _create_item(db_session, title=None, price_pln=None)
 
-    with pytest.raises(intake.IntakeValidationError, match="tytulu"):
+    with pytest.raises(intake.IntakeValidationError, match="tytułu"):
         await intake.approve_and_publish(db_session, item_id)
 
 
@@ -914,7 +914,7 @@ async def test_approve_and_publish_juz_opublikowanej_rzuca_blad_bez_wywolania_ol
 
     await intake.approve_and_publish(db_session, item_id)
 
-    with pytest.raises(intake.IntakeValidationError, match="juz powiazana"):
+    with pytest.raises(intake.IntakeValidationError, match="już powiązana"):
         await intake.approve_and_publish(db_session, item_id)
 
     create_advert.assert_called_once()
@@ -1117,7 +1117,7 @@ async def test_publish_batch_pomija_niekompletna_pozycje_bez_probowania_olx(
     assert result.published == 1
     assert result.failed == 0
     assert result.skipped == 1
-    assert result.errors == [(item_incomplete, "Pominieto: brak tytulu lub ceny.")]
+    assert result.errors == [(item_incomplete, "Pominięto: brak tytułu lub ceny.")]
     create_advert.assert_called_once()
 
     status = (
@@ -1332,7 +1332,7 @@ async def test_preview_publish_item_bez_tytulu_rzuca_blad(
 ) -> None:
     _, item_id = await _create_pending_item(db_session, title=None)
 
-    with pytest.raises(intake.IntakeValidationError, match="tytulu"):
+    with pytest.raises(intake.IntakeValidationError, match="tytułu"):
         await intake.preview_publish_item(db_session, item_id)
 
 

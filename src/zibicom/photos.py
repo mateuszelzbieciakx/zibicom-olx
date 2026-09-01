@@ -1,10 +1,10 @@
-"""Normalizacja zdjec produktowych oraz upload/skasowanie w Cloudflare R2.
+"""Normalizacja zdjęć produktowych oraz upload/skasowanie w Cloudflare R2.
 
-OLX nie przyjmuje binarnego uploadu zdjec - w payloadzie ogloszenia podaje
-sie liste URL-i, a OLX sam POBIERA pliki spod wskazanego adresu. Zdjecia
-musza wiec byc publicznie osiagalne z internetu ZANIM wyslemy ogloszenie.
-Aplikacja chodzi lokalnie na Macu za NAT-em, wiec serwowanie z dysku
-odpada - pliki trafiaja do publicznego bucketu R2.
+OLX nie przyjmuje binarnego uploadu zdjęć - w payloadzie ogłoszenia podaje
+się listę URL-i, a OLX sam POBIERA pliki spod wskazanego adresu. Zdjęcia
+muszą więc być publicznie osiągalne z internetu ZANIM wyślemy ogłoszenie.
+Aplikacja chodzi lokalnie na Macu za NAT-em, więc serwowanie z dysku
+odpada - pliki trafiają do publicznego bucketu R2.
 """
 
 from __future__ import annotations
@@ -27,32 +27,32 @@ JPEG_QUALITY = 80
 
 
 def normalize_photo(raw: bytes) -> bytes:
-    """Normalizuje surowe zdjecie (HEIC/JPEG/PNG) do publikowalnego JPEG-a.
+    """Normalizuje surowe zdjęcie (HEIC/JPEG/PNG) do publikowalnego JPEG-a.
 
     Usuwamy metadane EXIF - to nie kosmetyka. iPhone zapisuje w EXIF
-    wspolrzedne GPS miejsca zrobienia zdjecia, a znormalizowany plik trafia
-    pod publiczny URL w R2. Bez usuniecia EXIF-a kazdy, kto zobaczy
-    ogloszenie na OLX, poznalby dokladna lokalizacje sklepu. Orientacja z
+    współrzędne GPS miejsca zrobienia zdjęcia, a znormalizowany plik trafia
+    pod publiczny URL w R2. Bez usunięcia EXIF-a każdy, kto zobaczy
+    ogłoszenie na OLX, poznałby dokładną lokalizację sklepu. Orientacja z
     EXIF (pion/poziom telefonu) jest natomiast najpierw ZASTOSOWANA do
     pikseli (`ImageOps.exif_transpose`) - inaczej, po odrzuceniu metadanych,
-    zdjecia z iPhone'a wyszlyby obrocone.
+    zdjęcia z iPhone'a wyszłyby obrócone.
 
     Args:
-        raw: Surowa zawartosc pliku zdjecia (HEIC, JPEG lub PNG).
+        raw: Surowa zawartość pliku zdjęcia (HEIC, JPEG lub PNG).
 
     Returns:
-        Bajty znormalizowanego zdjecia w formacie JPEG (RGB, maks. 1600 px
-        dluzszego boku, jakosc 80, bez EXIF).
+        Bajty znormalizowanego zdjęcia w formacie JPEG (RGB, maks. 1600 px
+        dłuższego boku, jakość 80, bez EXIF).
 
     Raises:
-        ValueError: Gdy `raw` nie da sie zdekodowac jako obraz.
+        ValueError: Gdy `raw` nie da się zdekodować jako obraz.
     """
     try:
         image = Image.open(io.BytesIO(raw))
         image.load()
     except Exception as exc:
         raise ValueError(
-            "Nie udalo sie odczytac pliku jako obrazu (HEIC/JPEG/PNG)."
+            "Nie udało się odczytać pliku jako obrazu (HEIC/JPEG/PNG)."
         ) from exc
 
     image = ImageOps.exif_transpose(image)
@@ -60,8 +60,8 @@ def normalize_photo(raw: bytes) -> bytes:
     image.thumbnail((MAX_DIMENSION_PX, MAX_DIMENSION_PX), Image.Resampling.LANCZOS)
 
     output = io.BytesIO()
-    # Brak argumentu exif= => Pillow nie zapisuje zadnych metadanych EXIF
-    # do wyjsciowego JPEG-a, niezaleznie od tego, co niesie obraz wejsciowy.
+    # Brak argumentu exif= => Pillow nie zapisuje żadnych metadanych EXIF
+    # do wyjściowego JPEG-a, niezależnie od tego, co niesie obraz wejściowy.
     image.save(output, format="JPEG", quality=JPEG_QUALITY)
     return output.getvalue()
 
@@ -70,7 +70,7 @@ def _r2_client() -> BaseClient:
     """Buduje klienta boto3 S3 skonfigurowanego pod Cloudflare R2.
 
     Returns:
-        Klient boto3 "s3" wskazujacy na endpoint R2 z konfiguracji.
+        Klient boto3 "s3" wskazujący na endpoint R2 z konfiguracji.
     """
     settings = get_settings()
     return boto3.client(
@@ -83,13 +83,13 @@ def _r2_client() -> BaseClient:
 
 
 def upload_photo(jpeg_bytes: bytes) -> str:
-    """Wysyla znormalizowane zdjecie JPEG do R2 i zwraca jego publiczny URL.
+    """Wysyła znormalizowane zdjęcie JPEG do R2 i zwraca jego publiczny URL.
 
     Args:
-        jpeg_bytes: Bajty zdjecia JPEG (wynik `normalize_photo`).
+        jpeg_bytes: Bajty zdjęcia JPEG (wynik `normalize_photo`).
 
     Returns:
-        Pelny, publiczny URL zdjecia w R2, gotowy do wpisania w payload OLX.
+        Pełny, publiczny URL zdjęcia w R2, gotowy do wpisania w payload OLX.
     """
     settings = get_settings()
     now = datetime.now(UTC)
@@ -106,22 +106,22 @@ def upload_photo(jpeg_bytes: bytes) -> str:
 
 
 def download_photo(public_url: str) -> bytes:
-    """Pobiera zawartosc zdjecia z R2 na podstawie jego publicznego URL-a.
+    """Pobiera zawartość zdjęcia z R2 na podstawie jego publicznego URL-a.
 
-    Uzywane w kroku rozpoznawania AI (`zibicom.intake.extract_batch`) -
-    zdjecia partii istnieja tylko jako obiekty w R2, wiec trzeba je stamtad
-    sciagnac przed przekazaniem do Gemini.
+    Używane w kroku rozpoznawania AI (`zibicom.intake.extract_batch`) -
+    zdjęcia partii istnieją tylko jako obiekty w R2, więc trzeba je stamtąd
+    ściągnąć przed przekazaniem do Gemini.
 
     Args:
-        public_url: Publiczny URL zdjecia zwrocony wczesniej przez
+        public_url: Publiczny URL zdjęcia zwrócony wcześniej przez
             `upload_photo`.
 
     Returns:
-        Bajty zdjecia.
+        Bajty zdjęcia.
 
     Raises:
-        ValueError: Gdy URL nie nalezy do skonfigurowanego publicznego
-            bucketu R2 (np. literowka albo dane z innego srodowiska).
+        ValueError: Gdy URL nie należy do skonfigurowanego publicznego
+            bucketu R2 (np. literówka albo dane z innego środowiska).
     """
     settings = get_settings()
     prefix = f"{settings.r2_public_base_url}/"
@@ -136,18 +136,18 @@ def download_photo(public_url: str) -> bytes:
 
 
 def delete_photo(public_url: str) -> None:
-    """Kasuje zdjecie z R2 na podstawie jego publicznego URL-a.
+    """Kasuje zdjęcie z R2 na podstawie jego publicznego URL-a.
 
-    Uzywane, gdy oferta znika po sprzedazy i zdjecie przestaje byc
+    Używane, gdy oferta znika po sprzedaży i zdjęcie przestaje być
     potrzebne.
 
     Args:
-        public_url: Publiczny URL zdjecia zwrocony wczesniej przez
+        public_url: Publiczny URL zdjęcia zwrócony wcześniej przez
             `upload_photo`.
 
     Raises:
-        ValueError: Gdy URL nie nalezy do skonfigurowanego publicznego
-            bucketu R2 (np. literowka albo dane z innego srodowiska).
+        ValueError: Gdy URL nie należy do skonfigurowanego publicznego
+            bucketu R2 (np. literówka albo dane z innego środowiska).
     """
     settings = get_settings()
     prefix = f"{settings.r2_public_base_url}/"

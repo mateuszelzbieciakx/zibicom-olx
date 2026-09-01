@@ -73,7 +73,7 @@ def test_niepewny_tytul_generuje_ostrzezenie() -> None:
     )
 
     assert listings[0].warning is not None
-    assert "tytul" in listings[0].warning
+    assert "tytuł" in listings[0].warning
 
 
 def test_zdjecie_bez_ceny_nie_obniza_pewnosci_ceny_z_przodu() -> None:
@@ -131,7 +131,7 @@ def test_niepewny_tytul_ze_zrodlowego_zdjecia_generuje_ostrzezenie() -> None:
     listings = group_photos(photos)
 
     assert listings[0].warning is not None
-    assert "tytul" in listings[0].warning
+    assert "tytuł" in listings[0].warning
 
 
 def test_brak_ostrzezenia_gdy_wszystko_pewne() -> None:

@@ -1,10 +1,10 @@
-"""Warstwa poczekalni (staging) dla partii zdjec przetwarzanych przez AI.
+"""Warstwa poczekalni (staging) dla partii zdjęć przetwarzanych przez AI.
 
-Rozpoznanie obrazem jest niepewne (model myli ceny i czasem tytuly), wiec
-wyniki NIE trafiaja bezposrednio do tabel produkcyjnych `game`/`listing` -
-zyja w `intake_batch`/`intake_item`/`intake_photo`, dopoki czlowiek ich nie
+Rozpoznanie obrazem jest niepewne (model myli ceny i czasem tytuły), więc
+wyniki NIE trafiają bezpośrednio do tabel produkcyjnych `game`/`listing` -
+żyją w `intake_batch`/`intake_item`/`intake_photo`, dopóki człowiek ich nie
 zatwierdzi. Publikacja zatwierdzonych pozycji do OLX to kolejny krok, poza
-zakresem tego modulu.
+zakresem tego modułu.
 """
 
 from __future__ import annotations
@@ -28,26 +28,26 @@ logger = logging.getLogger(__name__)
 
 
 class IntakeError(Exception):
-    """Blad domenowy warstwy intake - komunikat po polsku, gotowy dla klienta."""
+    """Błąd domenowy warstwy intake - komunikat po polsku, gotowy dla klienta."""
 
 
 class IntakeNotFoundError(IntakeError):
-    """Zadany zasob (partia albo pozycja) nie istnieje."""
+    """Żądany zasób (partia albo pozycja) nie istnieje."""
 
 
 class IntakeValidationError(IntakeError):
-    """Zadanie narusza regule biznesowa poczekalni."""
+    """Żądanie narusza regułę biznesową poczekalni."""
 
 
 class PlatformView(BaseModel):
-    """Wpis slownika platform do listy wyboru.
+    """Wpis słownika platform do listy wyboru.
 
     Attributes:
-        id: Identyfikator platformy (uzywany jako platform_id w intake_item).
+        id: Identyfikator platformy (używany jako platform_id w intake_item).
         code: Kod platformy zgodny z PlatformCode.
-        name: Nazwa wyswietlana.
+        name: Nazwa wyświetlana.
         manufacturer: Producent.
-        generation: Etykieta generacji sprzetu, jesli dotyczy.
+        generation: Etykieta generacji sprzętu, jeśli dotyczy.
     """
 
     id: int
@@ -58,24 +58,24 @@ class PlatformView(BaseModel):
 
 
 class IntakeItemView(BaseModel):
-    """Pozycja poczekalni gotowa do wyswietlenia w widoku zatwierdzania.
+    """Pozycja poczekalni gotowa do wyświetlenia w widoku zatwierdzania.
 
     Attributes:
         id: Identyfikator pozycji.
-        batch_id: Partia, do ktorej nalezy pozycja.
-        position: Kolejnosc pozycji w obrebie partii.
-        title: Tytul (moze byc None, gdy AI go nie odczytalo).
-        platform_id: Identyfikator platformy w slowniku, jesli przypisana.
-        platform_code: Kod platformy, jesli przypisana.
-        platform_name: Nazwa platformy, jesli przypisana.
-        platform_manufacturer: Producent platformy, jesli przypisana.
+        batch_id: Partia, do której należy pozycja.
+        position: Kolejność pozycji w obrębie partii.
+        title: Tytuł (może być None, gdy AI go nie odczytało).
+        platform_id: Identyfikator platformy w słowniku, jeśli przypisana.
+        platform_code: Kod platformy, jeśli przypisana.
+        platform_name: Nazwa platformy, jeśli przypisana.
+        platform_manufacturer: Producent platformy, jeśli przypisana.
         platform_other: Opisowa platforma, gdy platform_code == "other".
-        price_pln: Cena w PLN (moze byc None).
-        condition: Stan egzemplarza (moze byc None).
-        ai_warning: Zbiorcze ostrzezenie z grupowania AI.
-        status: Status pozycji w cyklu zycia poczekalni.
-        listing_id: Identyfikator opublikowanej oferty, jesli juz istnieje.
-        photo_urls: Publiczne URL-e zdjec pozycji, w kolejnosci.
+        price_pln: Cena w PLN (może być None).
+        condition: Stan egzemplarza (może być None).
+        ai_warning: Zbiorcze ostrzeżenie z grupowania AI.
+        status: Status pozycji w cyklu życia poczekalni.
+        listing_id: Identyfikator opublikowanej oferty, jeśli już istnieje.
+        photo_urls: Publiczne URL-e zdjęć pozycji, w kolejności.
     """
 
     id: int
@@ -96,14 +96,14 @@ class IntakeItemView(BaseModel):
 
 
 class IntakeItemUpdate(BaseModel):
-    """Korekta pol pozycji poczekalni wprowadzana recznie przez czlowieka.
+    """Korekta pól pozycji poczekalni wprowadzana ręcznie przez człowieka.
 
-    Wszystkie pola sa opcjonalne - w PATCH przesyla sie tylko to, co sie
+    Wszystkie pola są opcjonalne - w PATCH przesyła się tylko to, co się
     zmienia (`model_fields_set` decyduje, co trafi do UPDATE-u).
 
     Attributes:
-        title: Poprawiony tytul.
-        platform_id: Poprawiona platforma (id ze slownika `platform`).
+        title: Poprawiony tytuł.
+        platform_id: Poprawiona platforma (id ze słownika `platform`).
         platform_other: Opis platformy, gdy platform_id wskazuje na "other".
         price_pln: Poprawiona cena w PLN.
         condition: Poprawiony stan egzemplarza.
@@ -118,10 +118,10 @@ class IntakeItemUpdate(BaseModel):
     @field_validator("price_pln")
     @classmethod
     def _cena_nieujemna(cls, value: Decimal | None) -> Decimal | None:
-        """Odrzuca ujemna cene przed wyslaniem jej do bazy.
+        """Odrzuca ujemna cene przed wysłaniem jej do bazy.
 
         Args:
-            value: Poprawiona cena w PLN (moze byc None).
+            value: Poprawiona cena w PLN (może być None).
 
         Returns:
             Cene bez zmian.
@@ -130,7 +130,7 @@ class IntakeItemUpdate(BaseModel):
             ValueError: Gdy cena jest ujemna.
         """
         if value is not None and value < 0:
-            raise ValueError("Cena nie moze byc ujemna.")
+            raise ValueError("Cena nie może być ujemna.")
         return value
 
 
@@ -140,11 +140,11 @@ class BatchView(BaseModel):
     Attributes:
         id: Identyfikator partii.
         created_at: Moment utworzenia partii.
-        photo_count: Liczba zdjec wgranych w partii.
+        photo_count: Liczba zdjęć wgranych w partii.
         item_count: Liczba pozycji utworzonych przez `extract_batch`.
         status_counts: Rozbicie pozycji wg `intake_item.status`
-            (np. {"pending": 3, "published": 1}) - statusy bez zadnej
-            pozycji w tej partii sa pominiete.
+            (np. {"pending": 3, "published": 1}) - statusy bez żadnej
+            pozycji w tej partii są pominięte.
     """
 
     id: int
@@ -161,10 +161,10 @@ class ListingStatusView(BaseModel):
         id: Identyfikator oferty.
         status: Nasz status (`listing_status`) po zmapowaniu z OLX
             (`_map_olx_status`).
-        olx_status: Surowy status zwrocony przez OLX, niezaleznie od
+        olx_status: Surowy status zwrócony przez OLX, niezależnie od
             mapowania.
-        posted_at: Moment, w ktorym oferta stala sie aktywna (None, jesli
-            jeszcze nie byla).
+        posted_at: Moment, w ktorym oferta stała się aktywna (None, jeśli
+            jeszcze nie była).
     """
 
     id: int
@@ -202,7 +202,7 @@ async def _batch_exists(session: AsyncSession, batch_id: int) -> bool:
         batch_id: Identyfikator partii.
 
     Returns:
-        True, jesli partia istnieje.
+        True, jeśli partia istnieje.
     """
     result = await session.execute(
         text("SELECT 1 FROM intake_batch WHERE id = :batch_id"),
@@ -212,14 +212,14 @@ async def _batch_exists(session: AsyncSession, batch_id: int) -> bool:
 
 
 async def _photo_urls_for_item(session: AsyncSession, item_id: int) -> list[str]:
-    """Zwraca publiczne URL-e zdjec przypisanych do pozycji, w kolejnosci.
+    """Zwraca publiczne URL-e zdjęć przypisanych do pozycji, w kolejności.
 
     Args:
         session: Sesja bazy danych.
         item_id: Identyfikator pozycji.
 
     Returns:
-        Lista URL-i zdjec posortowana wg intake_photo.position.
+        Lista URL-i zdjęć posortowana wg intake_photo.position.
     """
     result = await session.execute(
         text(
@@ -232,11 +232,11 @@ async def _photo_urls_for_item(session: AsyncSession, item_id: int) -> list[str]
 
 
 def _row_to_item_view(row: Row[Any], photo_urls: list[str]) -> IntakeItemView:
-    """Sklada wiersz z `_ITEM_VIEW_SELECT` i URL-e zdjec w IntakeItemView.
+    """Sklada wiersz z `_ITEM_VIEW_SELECT` i URL-e zdjęć w IntakeItemView.
 
     Args:
-        row: Wiersz (mapping) zwrocony przez zapytanie `_ITEM_VIEW_SELECT`.
-        photo_urls: URL-e zdjec pozycji, w kolejnosci.
+        row: Wiersz (mapping) zwrócony przez zapytanie `_ITEM_VIEW_SELECT`.
+        photo_urls: URL-e zdjęć pozycji, w kolejności.
 
     Returns:
         Zlozony widok pozycji poczekalni.
@@ -289,25 +289,25 @@ async def _get_item_view(session: AsyncSession, item_id: int) -> IntakeItemView:
 async def create_batch(
     session: AsyncSession, files: list[tuple[str | None, bytes]]
 ) -> int:
-    """Tworzy nowa partie poczekalni i wgrywa jej zdjecia do R2.
+    """Tworzy nową partię poczekalni i wgrywa jej zdjęcia do R2.
 
-    Kolejnosc plikow na wejsciu jest zachowywana jako `intake_photo.position`
-    - ta kolejnosc niesie informacje o granicach egzemplarzy, wykorzystywana
-    pozniej przez `extract_batch`/`zibicom.grouping.group_photos`.
+    Kolejność plikow na wejsciu jest zachowywana jako `intake_photo.position`
+    - ta kolejność niesie informacje o granicach egzemplarzy, wykorzystywana
+    później przez `extract_batch`/`zibicom.grouping.group_photos`.
 
     Args:
         session: Sesja bazy danych.
-        files: Lista (nazwa_pliku, surowe_bajty) w kolejnosci wgrania.
+        files: Lista (nazwa_pliku, surowe_bajty) w kolejności wgrania.
 
     Returns:
         Identyfikator utworzonej partii.
 
     Raises:
         IntakeValidationError: Gdy lista plikow jest pusta albo ktorys plik
-            nie daje sie zdekodowac jako obraz.
+            nie daje się zdekodować jako obraz.
     """
     if not files:
-        raise IntakeValidationError("Nalezy przeslac co najmniej jedno zdjecie.")
+        raise IntakeValidationError("Należy przeslac co najmniej jedno zdjęcie.")
 
     batch_result = await session.execute(
         text("INSERT INTO intake_batch DEFAULT VALUES RETURNING id")
@@ -319,7 +319,7 @@ async def create_batch(
             normalized = photos.normalize_photo(raw)
         except ValueError as exc:
             raise IntakeValidationError(
-                f"Plik {filename or f'#{position}'} nie jest poprawnym zdjeciem: {exc}"
+                f"Plik {filename or f'#{position}'} nie jest poprawnym zdjęciem: {exc}"
             ) from exc
 
         public_url = photos.upload_photo(normalized)
@@ -345,15 +345,15 @@ async def create_batch(
 async def _platform_id_for_code(
     session: AsyncSession, code: PlatformCode
 ) -> int | None:
-    """Odnajduje id platformy w slowniku po jej kodzie.
+    """Odnajduje id platformy w słowniku po jej kodzie.
 
     Args:
         session: Sesja bazy danych.
         code: Kod platformy rozpoznany przez AI.
 
     Returns:
-        Identyfikator platformy, albo None, gdy kodu nie ma w slowniku
-        (np. slownik nie zostal jeszcze zaladowany dla nowej platformy).
+        Identyfikator platformy, albo None, gdy kodu nie ma w słowniku
+        (np. słownik nie został jeszcze zaladowany dla nowej platformy).
     """
     result = await session.execute(
         text("SELECT id FROM platform WHERE code = :code"),
@@ -370,19 +370,19 @@ async def _save_group(
     group: grouping.GroupedListing,
     photo_ids: list[int],
 ) -> int:
-    """Zapisuje jeden domkniety egzemplarz jako intake_item i COMMITUJE.
+    """Zapisuje jeden domknięty egzemplarz jako intake_item i COMMITUJE.
 
-    Insert + przypisanie zdjec + commit w jednym kroku (nie tylko `add` do
-    sesji): operator ma zobaczyc kazdy nowo domkniety egzemplarz na GUI
-    najpozniej 2s po jego zamknieciu (`extraction_progress` odpytuje z
-    zupelnie innej sesji/transakcji), a commit dopiero na koncu calej
-    partii oznaczalby wielominutowe oczekiwanie na pierwsza karte. Commit
-    daje tez wznawialnosc "za darmo": jesli proces padnie miedzy dwoma
-    wywolaniami `_save_group`, ta funkcja NIGDY nie zostala wywolana dla
-    biezacej (jeszcze otwartej) grupy, wiec nie ma czesciowego zapisu do
-    posprzatania - INSERT+UPDATE ponizej sa niecommitowane razem, wiec
-    ewentualny crash miedzy nimi cofa oba (patrz `extract_batch`, ktory
-    przed wywolaniem tej funkcji sprawdza, czy grupa nie zostala juz
+    Insert + przypisanie zdjęć + commit w jednym kroku (nie tylko `add` do
+    sesji): operator ma zobaczyc każdy nowo domknięty egzemplarz na GUI
+    najpóźniej 2s po jego zamknięciu (`extraction_progress` odpytuje z
+    zupełnie innej sesji/transakcji), a commit dopiero na końcu całej
+    partii oznaczałby wielominutowe oczekiwanie na pierwsza kartę. Commit
+    daje też wznawialność "za darmo": jeśli proces padnie między dwoma
+    wywołaniami `_save_group`, ta funkcja NIGDY nie została wywołana dla
+    bieżącej (jeszcze otwartej) grupy, więc nie ma częściowego zapisu do
+    posprzątania - INSERT+UPDATE poniżej są niecommitowane razem, więc
+    ewentualny crash między nimi cofa oba (patrz `extract_batch`, który
+    przed wywołaniem tej funkcji sprawdza, czy grupa nie została już
     zapisana w poprzednim przebiegu).
 
     Args:
@@ -390,7 +390,7 @@ async def _save_group(
         batch_id: Identyfikator partii.
         position: Numer pozycji w partii (intake_item.position).
         group: Scalony opis egzemplarza (`grouping.IncrementalGrouper`).
-        photo_ids: Id zdjec nalezacych do tego egzemplarza, w kolejnosci.
+        photo_ids: Id zdjęć należących do tego egzemplarza, w kolejności.
 
     Returns:
         Id nowo utworzonej pozycji.
@@ -431,29 +431,29 @@ async def _save_group(
 def _recognize_with_fallback(
     photo_id: int, batch_id: int, public_url: str
 ) -> PhotoExtraction:
-    """Rozpoznaje jedno zdjecie; blad tego JEDNEGO zdjecia nie przerywa partii.
+    """Rozpoznaje jedno zdjęcie; błąd tego JEDNEGO zdjęcia nie przerywa partii.
 
-    `vision.recognize_photo` juz samo lapie wiekszosc bledow wywolania
-    Gemini i zwraca bezpieczny wynik zamiast rzucac wyjatek - jedyny
-    wyjatek od tej reguly to `GeminiQuotaExceededError` (celowo
-    propagowany dalej, zeby przerwac cala partie, patrz jego docstring) i
-    blad POBRANIA zdjecia z R2 (`photos.download_photo`), ktorego
-    `recognize_photo` w ogole nie widzi. Ta funkcja domyka ta druga luke:
-    kazdy inny blad (siec, R2, nieoczekiwany wyjatek) jest logowany i
-    zamieniany na PhotoExtraction z notatka zamiast wywracac cala partie -
-    jedno wadliwe zdjecie ma zostac pominiete, nie zablokowac reszty.
+    `vision.recognize_photo` już samo łapie większość błędów wywołania
+    Gemini i zwraca bezpieczny wynik zamiast rzucać wyjątek - jedyny
+    wyjątek od tej reguły to `GeminiQuotaExceededError` (celowo
+    propagowany dalej, żeby przerwać całą partię, patrz jego docstring) i
+    błąd POBRANIA zdjęcia z R2 (`photos.download_photo`), którego
+    `recognize_photo` w ogóle nie widzi. Ta funkcja domyka tę drugą lukę:
+    każdy inny błąd (sieć, R2, nieoczekiwany wyjątek) jest logowany i
+    zamieniany na PhotoExtraction z notatką zamiast wywracać całą partię -
+    jedno wadliwe zdjęcie ma zostać pominięte, nie zablokować reszty.
 
     Args:
-        photo_id: Identyfikator zdjecia (do logu).
+        photo_id: Identyfikator zdjęcia (do logu).
         batch_id: Identyfikator partii (do logu).
-        public_url: Publiczny URL zdjecia do pobrania z R2.
+        public_url: Publiczny URL zdjęcia do pobrania z R2.
 
     Returns:
-        Wynik rozpoznania, albo bezpieczny placeholder z notatka o bledzie.
+        Wynik rozpoznania, albo bezpieczny placeholder z notatką o błędzie.
 
     Raises:
         vision.GeminiQuotaExceededError: Gdy wyczerpano dzienny limit
-            Gemini - przerywa cala partie (ponawianie nic by nie dalo).
+            Gemini - przerywa całą partię (ponawianie nic by nie dało).
     """
     try:
         raw = photos.download_photo(public_url)
@@ -462,8 +462,8 @@ def _recognize_with_fallback(
         raise
     except Exception as exc:
         logger.exception(
-            "Rozpoznanie zdjecia %s (partia %s) nie powiodlo sie - "
-            "kontynuuje partie z pustym opisem tego zdjecia.",
+            "Rozpoznanie zdjęcia %s (partia %s) nie powiodło się - "
+            "kontynuuje partie z pustym opisem tego zdjęcia.",
             photo_id,
             batch_id,
         )
@@ -471,53 +471,53 @@ def _recognize_with_fallback(
             platform=PlatformCode.OTHER,
             title_confident=False,
             price_confident=False,
-            note=f"Blad rozpoznania: {exc}",
+            note=f"Błąd rozpoznania: {exc}",
         )
 
 
 async def extract_batch(session: AsyncSession, batch_id: int) -> int:
-    """Puszcza zdjecia partii przez rozpoznanie AI i grupuje je w pozycje.
+    """Puszcza zdjęcia partii przez rozpoznanie AI i grupuje je w pozycje.
 
-    PRZYROSTOWA i WZNAWIALNA. Kazdy domkniety egzemplarz (granica -
+    PRZYROSTOWA i WZNAWIALNA. Każdy domknięty egzemplarz (granica -
     `grouping.IncrementalGrouper`, patrz tamten docstring) jest zapisywany
     do intake_item i COMMITOWANY natychmiast (`_save_group`) - operator
-    widzi i moze edytowac pierwsze pozycje, zanim reszta partii sie
-    doliczy, zamiast czekac na koniec calej partii (przy 150 zdjeciach to
-    kilkanascie minut bezczynnosci).
+    widzi i może edytować pierwsze pozycje, zanim reszta partii się
+    doliczy, zamiast czekac na koniec całej partii (przy 150 zdjęciach to
+    kilkanaście minut bezczynności).
 
-    WZNAWIALNOSC jest tu najwazniejszym wymaganiem: przed ta zmiana
-    ekstrakcja byla atomowa (cala partia albo nic), wiec przerwanie w
-    trakcie (restart procesu, blad) nigdy nie zostawialo czesciowego
-    stanu do posprzatania. Teraz zostawia - i ponowne wywolanie tej
-    funkcji NA TEJ SAMEJ partii MUSI je bezpiecznie kontynuowac, a nie
-    zdublowac. Osiagniete przez pominiecie:
-    - zdjec z juz wypelnionym `ai_raw` (nie wywoluje ponownie ani R2, ani
-      Gemini - wczytuje zapisany wczesniej wynik),
-    - egzemplarzy, ktorych zdjecia maja juz przypisane `item_id` (nie
+    WZNAWIALNOŚĆ jest tu najważniejszym wymaganiem: przed tą zmianą
+    ekstrakcja była atomowa (cała partia albo nic), więc przerwanie w
+    trakcie (restart procesu, błąd) nigdy nie zostawiało częściowego
+    stanu do posprzątania. Teraz zostawia - i ponowne wywołanie tej
+    funkcji NA TEJ SAMEJ partii MUSI je bezpiecznie kontynuować, a nie
+    zdublować. Osiągnięte przez pominięcie:
+    - zdjęć z już wypełnionym `ai_raw` (nie wywołuje ponownie ani R2, ani
+      Gemini - wczytuje zapisany wcześniej wynik),
+    - egzemplarzy, których zdjęcia mają już przypisane `item_id` (nie
       tworzy drugiego intake_item dla tej samej grupy).
-    Bez tego drugiego punktu wznowienie tworzyloby DUPLIKATY pozycji -
-    a kazda duplikat, ktory dotrwa do publikacji, to podwojne ogloszenie
-    na OLX (ten blad juz raz w tym projekcie wystapil). Bezpieczenstwo
-    bierze sie z tego, ze `grouping.IncrementalGrouper` jest odtwarzany
-    od zdjecia #1 partii przy KAZDYM wywolaniu (rowniez wznowieniu) -
-    deterministyczny algorytm na tych samych danych (ai_raw sie nie
-    zmienia) zawsze wyznacza te same granice grup, wiec grupy juz
-    zapisane w poprzednim przebiegu sa rozpoznawane po tym, ze ich zdjecia
-    maja juz `item_id`, i po prostu pomijane.
+    Bez tego drugiego punktu wznowienie tworzyłoby DUPLIKATY pozycji -
+    a każda duplikat, który dotrwa do publikacji, to podwojne ogłoszenie
+    na OLX (ten błąd już raz w tym projekcie wystąpił). Bezpieczeństwo
+    bierze się z tego, że `grouping.IncrementalGrouper` jest odtwarzany
+    od zdjęcia #1 partii przy KAŻDYM wywołaniu (również wznowieniu) -
+    deterministyczny algorytm na tych samych danych (ai_raw się nie
+    zmienia) zawsze wyznacza te same granice grup, więc grupy już
+    zapisane w poprzednim przebiegu są rozpoznawane po tym, że ich zdjęcia
+    mają już `item_id`, i po prostu pomijane.
 
-    Blad rozpoznania POJEDYNCZEGO zdjecia (siec, R2, nieoczekiwany blad
+    Błąd rozpoznania POJEDYNCZEGO zdjęcia (sieć, R2, nieoczekiwany błąd
     Gemini) nie przerywa partii - `_recognize_with_fallback` loguje go i
-    zwraca placeholder z notatka, ekstrakcja partii biegnie dalej.
+    zwraca placeholder z notatką, ekstrakcja partii biegnie dalej.
     Wyjatkiem jest `vision.GeminiQuotaExceededError` (wyczerpany dzienny
-    limit Gemini) - to blad systemowy, nie wada jednego zdjecia, wiec
-    nadal przerywa cala partie (status 'failed'), tak jak poprzednio.
+    limit Gemini) - to błąd systemowy, nie wada jednego zdjęcia, więc
+    nadal przerywa całą partię (status 'failed'), tak jak poprzednio.
 
     Args:
         session: Sesja bazy danych.
         batch_id: Identyfikator partii.
 
     Returns:
-        Liczba pozycji NOWO utworzonych w TYM wywolaniu (przy wznowieniu
+        Liczba pozycji NOWO utworzonych w TYM wywołaniu (przy wznowieniu
         nie liczy pozycji zapisanych w poprzednim przebiegu).
 
     Raises:
@@ -552,8 +552,8 @@ async def extract_batch(session: AsyncSession, batch_id: int) -> int:
     grouper = grouping.IncrementalGrouper()
     created = 0
     try:
-        # (photo_id, czy ta grupa byla juz zapisana w poprzednim przebiegu)
-        # dla zdjec biezacej, jeszcze niedomknietej grupy.
+        # (photo_id, czy ta grupa była już zapisana w poprzednim przebiegu)
+        # dla zdjęć bieżącej, jeszcze niedomknietej grupy.
         pending: list[tuple[int, bool]] = []
 
         for photo_id, public_url, ai_raw, item_id in photo_rows:
@@ -573,8 +573,8 @@ async def extract_batch(session: AsyncSession, batch_id: int) -> int:
                         "ai_raw": json.dumps(extraction.model_dump(mode="json")),
                     },
                 )
-                # Commit per zdjecie: GUI odpytuje postep rozpoznania z
-                # zupelnie innej sesji/transakcji (patrz extraction_progress).
+                # Commit per zdjęcie: GUI odpytuje postęp rozpoznania z
+                # zupełnie innej sesji/transakcji (patrz extraction_progress).
                 await session.commit()
 
             closed = grouper.add_photo(extraction)
@@ -605,7 +605,7 @@ async def extract_batch(session: AsyncSession, batch_id: int) -> int:
             {"batch_id": batch_id},
         )
     except Exception as exc:
-        logger.exception("Rozpoznawanie partii %s nie powiodlo sie.", batch_id)
+        logger.exception("Rozpoznawanie partii %s nie powiodło się.", batch_id)
         await session.rollback()
         await session.execute(
             text("UPDATE intake_batch SET status = 'failed' WHERE id = :batch_id"),
@@ -613,7 +613,7 @@ async def extract_batch(session: AsyncSession, batch_id: int) -> int:
         )
         await session.commit()
         raise IntakeError(
-            f"Rozpoznawanie partii {batch_id} nie powiodlo sie: {exc}"
+            f"Rozpoznawanie partii {batch_id} nie powiodło się: {exc}"
         ) from exc
 
     await session.commit()
@@ -621,19 +621,19 @@ async def extract_batch(session: AsyncSession, batch_id: int) -> int:
 
 
 async def extraction_progress(session: AsyncSession, batch_id: int) -> tuple[int, int]:
-    """Zwraca postep ekstrakcji partii do paska postepu na `/ui`.
+    """Zwraca postęp ekstrakcji partii do paska postępu na `/ui`.
 
-    Wywolywane z osobnej sesji/transakcji niz ta, w ktorej biegnie
-    `extract_batch` w tle - dziala tylko dzieki temu, ze `extract_batch`
-    commituje `ai_raw` per zdjecie, a nie raz na koniec.
+    Wywoływane z osobnej sesji/transakcji niż ta, w której biegnie
+    `extract_batch` w tle - działa tylko dzięki temu, że `extract_batch`
+    commituje `ai_raw` per zdjęcie, a nie raz na koniec.
 
     Args:
         session: Sesja bazy danych.
         batch_id: Identyfikator partii.
 
     Returns:
-        Krotke (przetworzone, wszystkie): liczba zdjec z wypelnionym
-        `ai_raw` i liczba wszystkich zdjec partii.
+        Krotkę (przetworzone, wszystkie): liczba zdjęć z wypełnionym
+        `ai_raw` i liczba wszystkich zdjęć partii.
     """
     row = (
         await session.execute(
@@ -650,18 +650,18 @@ async def extraction_progress(session: AsyncSession, batch_id: int) -> tuple[int
 async def list_batches(session: AsyncSession) -> list[BatchView]:
     """Zwraca wszystkie partie do ekranu listy, od najnowszej.
 
-    Jedno zapytanie SQL: liczba zdjec i liczba pozycji sa policzone w
-    podzapytaniach zgrupowanych po `batch_id` (a nie przez bezposredni JOIN
-    intake_photo + intake_item do intake_batch), zeby nie mnozyc wierszy
-    iloczynem kartezjanskim zdjec i pozycji tej samej partii. Rozbicie wg
+    Jedno zapytanie SQL: liczba zdjęć i liczba pozycji są policzone w
+    podzapytaniach zgrupowanych po `batch_id` (a nie przez bezpośredni JOIN
+    intake_photo + intake_item do intake_batch), żeby nie mnożyć wierszy
+    iloczynem kartezjańskim zdjęć i pozycji tej samej partii. Rozbicie wg
     statusu pozycji jest agregowane do jsonb (`jsonb_object_agg`) w kolejnym
-    podzapytaniu - bez zadnego zapytania w petli po partiach (N+1).
+    podzapytaniu - bez żadnego zapytania w pętli po partiach (N+1).
 
     Args:
         session: Sesja bazy danych.
 
     Returns:
-        Partie posortowane malejaco wg id (najnowsza pierwsza).
+        Partie posortowane malejąco wg id (najnowsza pierwsza).
     """
     rows = (
         await session.execute(
@@ -704,16 +704,16 @@ async def list_batches(session: AsyncSession) -> list[BatchView]:
 async def _list_items_by_batch(
     session: AsyncSession, batch_id: int, *, after_item_id: int | None = None
 ) -> list[IntakeItemView]:
-    """Wspolna implementacja `list_items`/`list_items_after`.
+    """Wspólna implementacja `list_items`/`list_items_after`.
 
     Args:
         session: Sesja bazy danych.
         batch_id: Identyfikator partii.
-        after_item_id: Gdy podane, zwraca wylacznie pozycje z id wiekszym
-            niz ta wartosc (patrz `list_items_after`).
+        after_item_id: Gdy podane, zwraca wyłącznie pozycje z id większym
+            niż ta wartość (patrz `list_items_after`).
 
     Returns:
-        Pozycje partii w kolejnosci `intake_item.position`.
+        Pozycje partii w kolejności `intake_item.position`.
     """
     where = "ii.batch_id = :batch_id"
     params: dict[str, Any] = {"batch_id": batch_id}
@@ -736,15 +736,15 @@ async def _list_items_by_batch(
 
 
 async def list_items(session: AsyncSession, batch_id: int) -> list[IntakeItemView]:
-    """Zwraca pozycje partii przygotowane do zatwierdzenia przez czlowieka.
+    """Zwraca pozycje partii przygotowane do zatwierdzenia przez człowieka.
 
     Args:
         session: Sesja bazy danych.
         batch_id: Identyfikator partii.
 
     Returns:
-        Pozycje partii w kolejnosci `intake_item.position`, kazda ze
-        skladowymi nazwy platformy i lista URL-i wlasnych zdjec.
+        Pozycje partii w kolejności `intake_item.position`, każda ze
+        składowymi nazwy platformy i lista URL-i własnych zdjęć.
 
     Raises:
         IntakeNotFoundError: Gdy partia nie istnieje.
@@ -757,23 +757,23 @@ async def list_items(session: AsyncSession, batch_id: int) -> list[IntakeItemVie
 async def list_items_after(
     session: AsyncSession, batch_id: int, after_item_id: int
 ) -> list[IntakeItemView]:
-    """Zwraca pozycje partii utworzone PO danym id - do przyrostowego dopiecia kart.
+    """Zwraca pozycje partii utworzone PO danym id - do przyrostowego dopięcia kart.
 
-    Uzywane przez poling ekstrakcji w toku (fragment postepu): kazde
-    odpytanie prosi tylko o pozycje nowsze niz ostatnia juz pokazana w
-    przegladarce, zeby UI moglo je DOPIAC (`hx-swap-oob="beforeend"`) bez
-    przerenderowywania juz wyswietlonych kart - inaczej znikalaby
+    Używane przez poling ekstrakcji w toku (fragment postępu): każde
+    odpytanie prosi tylko o pozycje nowsze niż ostatnia już pokazana w
+    przeglądarce, żeby UI mogło je DOPIĄĆ (`hx-swap-oob="beforeend"`) bez
+    przerenderowywania już wyświetlonych kart - inaczej znikałaby
     niezapisana edycja operatora w pierwszej karcie przy kolejnym
     odpytaniu.
 
     Args:
         session: Sesja bazy danych.
         batch_id: Identyfikator partii.
-        after_item_id: Zwroc tylko pozycje z id wiekszym niz ten (0, zeby
-            zwrocic wszystkie pozycje partii).
+        after_item_id: Zwróć tylko pozycje z id większym niż ten (0, żeby
+            zwrócić wszystkie pozycje partii).
 
     Returns:
-        Pozycje partii z id > after_item_id, w kolejnosci `intake_item.position`.
+        Pozycje partii z id > after_item_id, w kolejności `intake_item.position`.
 
     Raises:
         IntakeNotFoundError: Gdy partia nie istnieje.
@@ -786,28 +786,28 @@ async def list_items_after(
 async def update_item(
     session: AsyncSession, item_id: int, payload: IntakeItemUpdate
 ) -> IntakeItemView:
-    """Zapisuje reczna korekte pol pozycji poczekalni.
+    """Zapisuje reczna korektę pól pozycji poczekalni.
 
     Args:
         session: Sesja bazy danych.
         item_id: Identyfikator pozycji.
-        payload: Pola do zmiany (tylko jawnie ustawione trafiaja do UPDATE-u).
+        payload: Pola do zmiany (tylko jawnie ustawione trafiają do UPDATE-u).
 
     Returns:
         Zaktualizowany widok pozycji.
 
     Raises:
         IntakeNotFoundError: Gdy pozycja albo wskazana platforma nie istnieje.
-        IntakeValidationError: Gdy pozycja jest juz opublikowana, albo brak
-            pol do zmiany.
+        IntakeValidationError: Gdy pozycja jest już opublikowana, albo brak
+            pól do zmiany.
     """
     current = await _get_item_view(session, item_id)
     if current.status == "published":
-        raise IntakeValidationError("Nie mozna edytowac juz opublikowanej pozycji.")
+        raise IntakeValidationError("Nie można edytować już opublikowanej pozycji.")
 
     fields = payload.model_dump(exclude_unset=True)
     if not fields:
-        raise IntakeValidationError("Brak pol do zmiany.")
+        raise IntakeValidationError("Brak pól do zmiany.")
 
     if "platform_id" in fields and fields["platform_id"] is not None:
         exists = await session.execute(
@@ -839,7 +839,7 @@ async def update_item(
 
 
 async def approve_item(session: AsyncSession, item_id: int) -> IntakeItemView:
-    """Zatwierdza pozycje poczekalni po walidacji kompletnosci danych.
+    """Zatwierdza pozycje poczekalni po walidacji kompletności danych.
 
     Args:
         session: Sesja bazy danych.
@@ -851,23 +851,23 @@ async def approve_item(session: AsyncSession, item_id: int) -> IntakeItemView:
     Raises:
         IntakeNotFoundError: Gdy pozycja nie istnieje.
         IntakeValidationError: Gdy pozycja nie ma statusu "pending", albo
-            brakuje jej tytulu lub ceny.
+            brakuje jej tytułu lub ceny.
     """
     current = await _get_item_view(session, item_id)
     if current.status != "pending":
         raise IntakeValidationError(
-            f"Pozycja ma status '{current.status}' - zatwierdzic mozna tylko "
+            f"Pozycja ma status '{current.status}' - zatwierdzić można tylko "
             "pozycje ze statusem 'pending'."
         )
 
     problems = []
     if not current.title:
-        problems.append("brak tytulu")
+        problems.append("brak tytułu")
     if current.price_pln is None:
         problems.append("brak ceny")
     if problems:
         raise IntakeValidationError(
-            "Nie mozna zatwierdzic pozycji: " + ", ".join(problems) + "."
+            "Nie można zatwierdzić pozycji: " + ", ".join(problems) + "."
         )
 
     await session.execute(
@@ -895,7 +895,7 @@ async def reject_item(session: AsyncSession, item_id: int) -> IntakeItemView:
     current = await _get_item_view(session, item_id)
     if current.status != "pending":
         raise IntakeValidationError(
-            f"Pozycja ma status '{current.status}' - odrzucic mozna tylko "
+            f"Pozycja ma status '{current.status}' - odrzucić można tylko "
             "pozycje ze statusem 'pending'."
         )
 
@@ -910,21 +910,21 @@ async def reject_item(session: AsyncSession, item_id: int) -> IntakeItemView:
 async def _find_or_create_game(
     session: AsyncSession, title: str, platform_id: int
 ) -> int:
-    """Znajduje istniejaca `game` po (lower(title), platform_id) albo ja tworzy.
+    """Znajduje istniejącą `game` po (lower(title), platform_id) albo ją tworzy.
 
-    Brak wyscigu miedzy SELECT-em a INSERT-em (klasyczny problem UPSERT-u
+    Brak wyścigu między SELECT-em a INSERT-em (klasyczny problem UPSERT-u
     bez unikalnego indeksu) nie jest tu problemem: publikacja jest
-    wywolywana recznie, pojedynczo, dla JEDNEJ pozycji na raz
-    (POST /api/intake/items/{id}/publish) - nie ma wspolbieznych zadan o ta
-    sama pare (tytul, platforma), ktore wymagalyby ON CONFLICT.
+    wywoływana ręcznie, pojedynczo, dla JEDNEJ pozycji na raz
+    (POST /api/intake/items/{id}/publish) - nie ma współbieżnych zadań o ta
+    sama parę (tytuł, platforma), które wymagałyby ON CONFLICT.
 
     Args:
         session: Sesja bazy danych.
-        title: Tytul gry (dopasowanie case-insensitive).
+        title: Tytuł gry (dopasowanie case-insensitive).
         platform_id: Id platformy.
 
     Returns:
-        Id istniejacej albo nowo utworzonej `game`.
+        Id istniejącej albo nowo utworzonej `game`.
     """
     existing = (
         await session.execute(
@@ -953,15 +953,15 @@ async def _resolve_platform_for_publish(
 ) -> tuple[str, str, str, str | None, int]:
     """Pobiera i waliduje dane platformy potrzebne do zbudowania payloadu OLX.
 
-    Czysto lokalna walidacja (SELECT + sprawdzenie kategorii) - ZERO wywolan
-    OLX. Celowo osobna funkcja, wywolywana w `publish_item` PRZED
+    Czysto lokalna walidacja (SELECT + sprawdzenie kategorii) - ZERO wywołań
+    OLX. Celowo osobna funkcja, wywoływana w `publish_item` PRZED
     `olx.get_access_token`: brak kategorii dla platformy (przypadek "other")
-    ma failowac natychmiast, bez wymagania wczesniej waznej autoryzacji OLX
-    - to tani, lokalny blad, nie powod do angazowania OLX.
+    ma failować natychmiast, bez wymagania wcześniej ważnej autoryzacji OLX
+    - to tani, lokalny błąd, nie powód do angażowania OLX.
 
     Args:
         session: Sesja bazy danych.
-        current: Widok pozycji z juz zweryfikowanym platform_id.
+        current: Widok pozycji z już zweryfikowanym platform_id.
 
     Returns:
         (manufacturer, platform_generation, console_name,
@@ -991,19 +991,19 @@ async def _resolve_platform_for_publish(
         platform_row
     )
     # Kategoria OLX jest per producent (migracja 0005) - "other" celowo nie
-    # ma ustalonej kategorii (rozne, nieprzewidywalne rodzaje przedmiotow),
-    # wiec bez tej walidacji create_advert wyslalby ogloszenie z
-    # category_id=NULL/nieprawidlowym zamiast czytelnego bledu PRZED
-    # jakimkolwiek wywolaniem OLX.
+    # ma ustalonej kategorii (różne, nieprzewidywalne rodzaje przedmiotów),
+    # więc bez tej walidacji create_advert wysłałby ogłoszenie z
+    # category_id=NULL/nieprawidłowym zamiast czytelnego błędu PRZED
+    # jakimkolwiek wywołaniem OLX.
     if olx_category_id is None:
         raise IntakeValidationError(
             f"Platforma '{platform_name}' nie ma ustalonej kategorii OLX "
-            "(platform.olx_category_id) - nie mozna opublikowac oferty. "
-            "Ustal kategorie przez GET /api/olx/categories/search i "
-            "uzupelnij ja w slowniku platform."
+            "(platform.olx_category_id) - nie można opublikować oferty. "
+            "Ustal kategorię przez GET /api/olx/categories/search i "
+            "uzupełnij ją w słowniku platform."
         )
-    # Platforma "other" nie ma generation/olx_attribute_value w slowniku -
-    # platform_other (opis wpisany recznie przy zatwierdzaniu) jest wtedy
+    # Platforma "other" nie ma generation/olx_attribute_value w słowniku -
+    # platform_other (opis wpisany ręcznie przy zatwierdzaniu) jest wtedy
     # jedynym sensownym opisem konsoli.
     platform_generation = generation or current.platform_other or platform_name
     console_name = current.platform_other or platform_name
@@ -1025,38 +1025,38 @@ def _build_advert_payload_for_item(
     olx_attribute_value: str | None,
     olx_category_id: int,
 ) -> dict[str, Any]:
-    """Buduje payload OLX (tytul/opis/payload), bez zadnej publikacji.
+    """Buduje payload OLX (tytuł/opis/payload), bez żadnej publikacji.
 
-    Przyjmuje juz zresolwowane dane platformy (`_resolve_platform_for_publish`)
-    zamiast pobierac je samodzielnie - `publish_item` resolwuje je PRZED
-    `olx.get_access_token` (patrz tamten docstring), wiec ponowne pobieranie
-    tutaj byloby zbednym zapytaniem.
+    Przyjmuje już zresolwowane dane platformy (`_resolve_platform_for_publish`)
+    zamiast pobierać je samodzielnie - `publish_item` resolwuje je PRZED
+    `olx.get_access_token` (patrz tamten docstring), więc ponowne pobieranie
+    tutaj byłoby zbędnym zapytaniem.
 
-    Wspoldzielone przez `publish_item` (rzeczywista publikacja) i
-    `preview_publish_item` (podglad bez create_advert) - obie sciezki MUSZA
-    uzywac dokladnie tych samych funkcji (`olx.build_title`,
-    `olx.build_description`, `olx.build_advert_payload`), inaczej podglad
-    przestalby byc wiarygodna diagnostyka tego, co faktycznie poszloby do
-    OLX. NIE wywoluje `olx.resolve_delivery_attribute` - "ad_delivery" jest
-    polem widocznym w odczycie ogloszenia, ale odrzucanym przy tworzeniu
-    (patrz `olx.build_advert_payload`), wiec nie ma sensu go tu ustalac.
+    Współdzielone przez `publish_item` (rzeczywista publikacja) i
+    `preview_publish_item` (podgląd bez create_advert) - obie ścieżki MUSZA
+    używać dokładnie tych samych funkcji (`olx.build_title`,
+    `olx.build_description`, `olx.build_advert_payload`), inaczej podgląd
+    przestałby być wiarygodna diagnostyka tego, co faktycznie poszłoby do
+    OLX. NIE wywołuje `olx.resolve_delivery_attribute` - "ad_delivery" jest
+    polem widocznym w odczycie ogłoszenia, ale odrzucanym przy tworzeniu
+    (patrz `olx.build_advert_payload`), więc nie ma sensu go tu ustalać.
 
-    Synchroniczna i bezstanowa (zero zapytan do bazy/OLX) - w odroznieniu od
-    poprzedniej wersji, ktora wywolywala resolve_delivery_attribute.
+    Synchroniczna i bezstanowa (zero zapytań do bazy/OLX) - w odróżnieniu od
+    poprzedniej wersji, która wywoływała resolve_delivery_attribute.
 
     Args:
-        current: Widok pozycji z juz zweryfikowanym title/price_pln/condition.
+        current: Widok pozycji z już zweryfikowanym title/price_pln/condition.
         manufacturer: Producent platformy (`_resolve_platform_for_publish`).
-        platform_generation: Etykieta generacji do tytulu.
+        platform_generation: Etykieta generacji do tytułu.
         console_name: Nazwa konsoli do opisu.
-        olx_attribute_value: Wartosc atrybutu platformy, albo None.
+        olx_attribute_value: Wartość atrybutu platformy, albo None.
         olx_category_id: Id kategorii OLX.
 
     Returns:
-        Payload gotowy do wyslania w tresci POST /adverts.
+        Payload gotowy do wysłania w treści POST /adverts.
 
     Raises:
-        olx.OlxValidationError: Gdy tytul albo liczba zdjec przekracza limit
+        olx.OlxValidationError: Gdy tytuł albo liczba zdjęć przekracza limit
             OLX.
     """
     settings = get_settings()
@@ -1088,11 +1088,11 @@ _OLX_STATUS_TO_LISTING_STATUS = {
     "moderated": "pending",
     "removed": "removed",
     "outdated": "removed",
-    # `disabled` jest niejednoznaczny: tuz po POST /adverts oznacza "jeszcze
+    # `disabled` jest niejednoznaczny: tuż po POST /adverts oznacza "jeszcze
     # nie aktywowane" (OLX aktywuje asynchronicznie, kilka minut), a po czasie
-    # - realnie zdjete. Mapujemy na stan przejsciowy, bo blad w te strone
-    # naprawia reconciler przy kolejnym odpytaniu; blad w strone terminalna
-    # jest trwaly - nikt juz takiego listingu nie sprawdzi, a FIFO go nie widzi.
+    # - realnie zdjęte. Mapujemy na stan przejściowy, bo błąd w te stronę
+    # naprawia reconciler przy kolejnym odpytaniu; błąd w stronę terminalna
+    # jest trwały - nikt już takiego listingu nie sprawdzi, a FIFO go nie widzi.
     "disabled": "pending",
 }
 
@@ -1100,24 +1100,24 @@ _OLX_STATUS_TO_LISTING_STATUS = {
 def _map_olx_status(raw_status: str | None) -> str:
     """Mapuje surowy status OLX na nasz enum `listing_status`.
 
-    Wystawienie ogloszenia to nie to samo, co bycie widocznym - OLX zwraca
-    status "new"/"waiting"/"moderated" przed moderacja i "active" dopiero po
-    niej (zweryfikowane empirycznie: to samo ogloszenie mialo "disabled"
-    zaraz po utworzeniu, a "active" kilka minut pozniej). FIFO przy
-    sprzedazy stacjonarnej (listing_fifo_idx) szuka WYLACZNIE status='active',
-    wiec pomylkowe zostawienie 'pending' dla juz aktywnego ogloszenia
-    oznaczaloby, ze FIFO nigdy go nie znajdzie.
+    Wystawienie ogłoszenia to nie to samo, co bycie widocznym - OLX zwraca
+    status "new"/"waiting"/"moderated" przed moderacją i "active" dopiero po
+    niej (zweryfikowane empirycznie: to samo ogłoszenie miało "disabled"
+    zaraz po utworzeniu, a "active" kilka minut później). FIFO przy
+    sprzedaży stacjonarnej (listing_fifo_idx) szuka WYŁĄCZNIE status='active',
+    więc pomyłkowe zostawienie 'pending' dla już aktywnego ogłoszenia
+    oznaczałoby, że FIFO nigdy go nie znajdzie.
 
     Args:
         raw_status: Surowy status z odpowiedzi OLX (`create_advert`/
             `olx.fetch_advert`), albo None.
 
     Returns:
-        Jedna z wartosci `listing_status`: "active", "pending" albo
-        "removed". Nieznany/brakujacy status mapuje na "pending" (bezpieczny
-        domyslny stan - ani falszywie aktywny w FIFO, ani przedwczesnie
-        zdjety) i jest logowany jako ostrzezenie, zeby dodac go do mapowania
-        zamiast cicho tracic informacje.
+        Jedna z wartości `listing_status`: "active", "pending" albo
+        "removed". Nieznany/brakujący status mapuje na "pending" (bezpieczny
+        domyślny stan - ani fałszywie aktywny w FIFO, ani przedwcześnie
+        zdjęty) i jest logowany jako ostrzeżenie, żeby dodać go do mapowania
+        zamiast cicho tracić informacje.
     """
     mapped = _OLX_STATUS_TO_LISTING_STATUS.get(raw_status) if raw_status else None
     if mapped is not None:
@@ -1131,28 +1131,28 @@ def _map_olx_status(raw_status: str | None) -> str:
 
 
 async def publish_item(session: AsyncSession, item_id: int) -> IntakeItemView:
-    """Publikuje zatwierdzona pozycje na OLX i promuje ja do tabel produkcyjnych.
+    """Publikuje zatwierdzoną pozycję na OLX i promuje ją do tabel produkcyjnych.
 
     Wykonywane w JEDNEJ transakcji: znalezienie/utworzenie `game`, utworzenie
-    `listing` i `listing_photo`, wywolanie OLX (`olx.create_advert`), a na
+    `listing` i `listing_photo`, wywołanie OLX (`olx.create_advert`), a na
     koniec ustawienie `intake_item.status='published'` razem z `listing_id`.
-    Cokolwiek zawiedzie po drodze wycofuje CALOSC - nie moze zostac
-    ogloszenie na OLX bez odpowiadajacego mu rekordu w bazie.
+    Cokolwiek zawiedzie po drodze wycofuje CALOSC - nie może zostać
+    ogłoszenie na OLX bez odpowiadajacego mu rekordu w bazie.
 
-    `listing.status` po publikacji NIE jest juz na sztywno 'pending' -
-    mapuje sie z surowego statusu OLX (`_map_olx_status`), bo OLX moze
-    zwrocic w odpowiedzi na create_advert ogloszenie juz aktywne (bez
-    moderacji dla zaufanych kont) - FIFO przy sprzedazy stacjonarnej
-    (listing_fifo_idx) szuka WYLACZNIE status='active', wiec pozostawienie
-    'pending' dla juz aktywnego ogloszenia oznaczaloby, ze FIFO nigdy go nie
-    znajdzie. Status MOZE tez zmienic sie PO tej funkcji, bez naszego
-    udzialu (moderacja z opoznieniem, wygasniecie, zdjecie przez OLX) - do
-    tego sluzy `sync_advert_status`.
+    `listing.status` po publikacji NIE jest już na sztywno 'pending' -
+    mapuje się z surowego statusu OLX (`_map_olx_status`), bo OLX może
+    zwrócić w odpowiedzi na create_advert ogłoszenie już aktywne (bez
+    moderacji dla zaufanych kont) - FIFO przy sprzedaży stacjonarnej
+    (listing_fifo_idx) szuka WYŁĄCZNIE status='active', więc pozostawienie
+    'pending' dla już aktywnego ogłoszenia oznaczałoby, że FIFO nigdy go nie
+    znajdzie. Status MOŻE też zmienić się PO tej funkcji, bez naszego
+    udziału (moderacją z opóźnieniem, wygaśnięcie, zdjęcie przez OLX) - do
+    tego służy `sync_advert_status`.
 
     Token OLX jest zdobywany PRZED jakimkolwiek zapisem do bazy w tej
-    funkcji - `olx.get_access_token` moze przy okazji zacommitowac odswiezony
-    token (rotacja refresh tokenu), a zrobione pozniej przedwczesnie
-    zatwierdziloby czesciowy stan tej transakcji (patrz docstring
+    funkcji - `olx.get_access_token` może przy okazji zacommitować odświeżony
+    token (rotacja refresh tokenu), a zrobione później przedwcześnie
+    zatwierdziłoby częściowy stan tej transakcji (patrz docstring
     `olx.get_access_token` i `olx.create_advert`).
 
     Args:
@@ -1160,30 +1160,30 @@ async def publish_item(session: AsyncSession, item_id: int) -> IntakeItemView:
         item_id: Identyfikator pozycji poczekalni.
 
     Returns:
-        Opublikowany widok pozycji (status='published', wypelnione listing_id).
+        Opublikowany widok pozycji (status='published', wypełnione listing_id).
 
     Raises:
         IntakeNotFoundError: Gdy pozycja nie istnieje.
         IntakeValidationError: Gdy pozycja nie ma statusu 'approved', nie ma
             przypisanej platformy, albo platforma nie ma ustalonej kategorii
             OLX (platform.olx_category_id - przypadek "other").
-        olx.OlxError: Gdy publikacja na OLX sie nie powiedzie (brak
-            autoryzacji, naruszenie limitu OLX, blad API) - transakcja jest
-            wtedy w calosci wycofywana.
+        olx.OlxError: Gdy publikacja na OLX się nie powiedzie (brak
+            autoryzacji, naruszenie limitu OLX, błąd API) - transakcja jest
+            wtedy w całości wycofywana.
     """
     current = await _get_item_view(session, item_id)
     if current.status != "approved":
         raise IntakeValidationError(
-            f"Pozycja ma status '{current.status}' - publikowac mozna tylko "
+            f"Pozycja ma status '{current.status}' - publikować można tylko "
             "pozycje ze statusem 'approved'."
         )
     if current.platform_id is None:
-        raise IntakeValidationError("Nie mozna opublikowac pozycji bez platformy.")
-    # approve_item juz wymusil obecnosc tytulu i ceny; condition jest
+        raise IntakeValidationError("Nie można opublikować pozycji bez platformy.")
+    # approve_item już wymusił obecność tytułu i ceny; condition jest
     # wymagane do zbudowania atrybutu stanu w payloadzie OLX.
     if current.title is None or current.price_pln is None or current.condition is None:
         raise IntakeValidationError(
-            "Nie mozna opublikowac pozycji bez tytulu, ceny albo stanu."
+            "Nie można opublikować pozycji bez tytułu, ceny albo stanu."
         )
     (
         manufacturer,
@@ -1281,21 +1281,21 @@ async def publish_item(session: AsyncSession, item_id: int) -> IntakeItemView:
 async def approve_and_publish(session: AsyncSession, item_id: int) -> IntakeItemView:
     """Zatwierdza i publikuje pozycje poczekalni w jednej akcji operatora.
 
-    Laczy `approve_item` i `publish_item` (wywolane sekwencyjnie, kazda ze
-    swoim commitem - patrz ich docstringi) w jeden klik na karcie: przeglad
-    pozycji i tak odbywa sie wzrokowo przed kliknieciem "Publikuj", wiec
-    osobny krok "Zatwierdz" byl zbedny. Posrednie przejscie statusu
+    Łączy `approve_item` i `publish_item` (wywołane sekwencyjnie, każda ze
+    swoim commitem - patrz ich docstringi) w jeden klik na karcie: przegląd
+    pozycji i tak odbywa się wzrokowo przed kliknięciem "Publikuj", więc
+    osobny krok "Zatwierdź" byl zbędny. Pośrednie przejście statusu
     pending -> approved -> published zostaje mimo to zapisane w bazie
-    (sciezka audytu) - to dwie transakcje, nie jedna atomowa.
+    (ścieżka audytu) - to dwie transakcje, nie jedna atomowa.
 
-    `approve_item` wymaga statusu 'pending' (patrz jej docstring), wiec
-    pozycje juz zatwierdzone wczesniej (istnieja z pracy sprzed merge'a
-    "Zatwierdz"+"Publikuj" w jeden przycisk - Publikuj jest dla nich widoczne
-    na karcie i w `publish_batch`) omijaja ten krok i ida wprost do
-    `publish_item`, zamiast rzucac blad o zlym statusie.
+    `approve_item` wymaga statusu 'pending' (patrz jej docstring), więc
+    pozycje już zatwierdzone wcześniej (istnieją z pracy sprzed merge'a
+    "Zatwierdź"+"Publikuj" w jeden przycisk - Publikuj jest dla nich widoczne
+    na karcie i w `publish_batch`) omijają ten krok i idą wprost do
+    `publish_item`, zamiast rzucać błąd o złym statusie.
 
-    Zero duplikacji logiki: `approve_item`/`publish_item` zostaja nietkniete
-    i nadal sa uzywane bezposrednio przez JSON API (POST .../approve,
+    Zero duplikacji logiki: `approve_item`/`publish_item` zostają nietknięte
+    i nadal są używane bezpośrednio przez JSON API (POST .../approve,
     POST .../publish) oraz `publish_batch`.
 
     Args:
@@ -1303,16 +1303,16 @@ async def approve_and_publish(session: AsyncSession, item_id: int) -> IntakeItem
         item_id: Identyfikator pozycji.
 
     Returns:
-        Opublikowany widok pozycji (status='published', wypelnione listing_id).
+        Opublikowany widok pozycji (status='published', wypełnione listing_id).
 
     Raises:
         IntakeNotFoundError: Gdy pozycja nie istnieje.
-        IntakeValidationError: Gdy pozycja jest juz powiazana z listingiem
-            (guard idempotencji nizej - zastepuje usuwane z UI potwierdzenie
-            w przegladarce jako realna ochrona przed dwuklikiem), albo gdy
-            walidacja `approve_item`/`publish_item` sie nie powiedzie (brak
-            tytulu/ceny/platformy/kategorii OLX itd).
-        olx.OlxError: Gdy publikacja na OLX sie nie powiedzie.
+        IntakeValidationError: Gdy pozycja jest już powiązana z listingiem
+            (guard idempotencji niżej - zastępuje usuwane z UI potwierdzenie
+            w przeglądarce jako realna ochrona przed dwuklikiem), albo gdy
+            walidacja `approve_item`/`publish_item` się nie powiedzie (brak
+            tytułu/ceny/platformy/kategorii OLX itd).
+        olx.OlxError: Gdy publikacja na OLX się nie powiedzie.
     """
     current = await _get_item_view(session, item_id)
     if current.listing_id is not None:
@@ -1324,8 +1324,8 @@ async def approve_and_publish(session: AsyncSession, item_id: int) -> IntakeItem
         ).scalar_one_or_none()
         detail = f", olx_advert_id={olx_advert_id}" if olx_advert_id else ""
         raise IntakeValidationError(
-            f"Pozycja jest juz powiazana z listingiem {current.listing_id}"
-            f"{detail} - nie mozna opublikowac ponownie."
+            f"Pozycja jest już powiązana z listingiem {current.listing_id}"
+            f"{detail} - nie można opublikować ponownie."
         )
 
     if current.status == "pending":
@@ -1334,18 +1334,18 @@ async def approve_and_publish(session: AsyncSession, item_id: int) -> IntakeItem
 
 
 async def preview_publish_item(session: AsyncSession, item_id: int) -> dict[str, Any]:
-    """Buduje podglad payloadu OLX dla pozycji, BEZ publikacji.
+    """Buduje podgląd payloadu OLX dla pozycji, BEZ publikacji.
 
-    Uzywa `_build_advert_payload_for_item` - dokladnie tych samych funkcji
+    Używa `_build_advert_payload_for_item` - dokładnie tych samych funkcji
     co `publish_item` (`olx.build_title`, `olx.build_description`,
-    `olx.build_advert_payload`) - ale NIE wywoluje `olx.create_advert` i NIE
+    `olx.build_advert_payload`) - ale NIE wywołuje `olx.create_advert` i NIE
     zapisuje niczego do `game`/`listing`/`listing_photo`. Do diagnozowania
-    bledow walidacji OLX (np. za dlugi tytul, zla kategoria) bez zuzywania
-    proby na prawdziwej publikacji - OLX nie ma srodowiska testowego, wiec
-    kazda proba `publish_item` to prawdziwe ogloszenie.
+    błędów walidacji OLX (np. za długi tytuł, zła kategoria) bez zużywania
+    próby na prawdziwej publikacji - OLX nie ma środowiska testowego, więc
+    każda proba `publish_item` to prawdziwe ogłoszenie.
 
-    W ODROZNIENIU od `publish_item`, dostepne dla pozycji w DOWOLNYM
-    statusie (nie tylko 'approved') - zeby dalo sie zdiagnozowac problem
+    W ODRÓŻNIENIU od `publish_item`, dostępne dla pozycji w DOWOLNYM
+    statusie (nie tylko 'approved') - żeby dało się zdiagnozować problem
     PRZED zatwierdzeniem.
 
     Args:
@@ -1353,23 +1353,23 @@ async def preview_publish_item(session: AsyncSession, item_id: int) -> dict[str,
         item_id: Identyfikator pozycji poczekalni.
 
     Returns:
-        Payload, ktory poszedlby do POST /adverts przy prawdziwej publikacji
+        Payload, który poszedłby do POST /adverts przy prawdziwej publikacji
         (`publish_item`).
 
     Raises:
         IntakeNotFoundError: Gdy pozycja nie istnieje.
-        IntakeValidationError: Gdy pozycji brakuje platformy, tytulu, ceny
+        IntakeValidationError: Gdy pozycji brakuje platformy, tytułu, ceny
             albo stanu, platforma nie istnieje, albo nie ma ustalonej
             kategorii OLX (platform.olx_category_id - przypadek "other").
-        olx.OlxValidationError: Gdy tytul albo liczba zdjec przekracza limit
+        olx.OlxValidationError: Gdy tytuł albo liczba zdjęć przekracza limit
             OLX.
     """
     current = await _get_item_view(session, item_id)
     if current.platform_id is None:
-        raise IntakeValidationError("Nie mozna zbudowac podgladu bez platformy.")
+        raise IntakeValidationError("Nie można zbudować podglądu bez platformy.")
     if current.title is None or current.price_pln is None or current.condition is None:
         raise IntakeValidationError(
-            "Nie mozna zbudowac podgladu bez tytulu, ceny albo stanu."
+            "Nie można zbudować podglądu bez tytułu, ceny albo stanu."
         )
     (
         manufacturer,
@@ -1392,14 +1392,14 @@ class BulkPublishResult(BaseModel):
     """Podsumowanie masowej publikacji zatwierdzonych pozycji jednej partii.
 
     Attributes:
-        published: Liczba pozycji opublikowanych pomyslnie.
-        failed: Liczba pozycji, ktorych publikacja sie nie powiodla.
-        skipped: Liczba pozycji pominietych - status inny niz
-            'pending'/'approved', albo brak tytulu/ceny.
-        aborted: Czy przebieg zostal przerwany przez circuit breaker (3
-            bledy pod rzad).
-        errors: Pary (item_id, komunikat bledu) dla nieudanych pozycji, w
-            kolejnosci wystapienia.
+        published: Liczba pozycji opublikowanych pomyślnie.
+        failed: Liczba pozycji, których publikacja się nie powiodła.
+        skipped: Liczba pozycji pominiętych - status inny niż
+            'pending'/'approved', albo brak tytułu/ceny.
+        aborted: Czy przebieg został przerwany przez circuit breaker (3
+            błędy pod rząd).
+        errors: Pary (item_id, komunikat błędu) dla nieudanych pozycji, w
+            kolejności wystąpienia.
     """
 
     published: int
@@ -1416,39 +1416,39 @@ _BULK_PUBLISH_CIRCUIT_BREAKER_THRESHOLD = 3
 async def publish_batch(session: AsyncSession, batch_id: int) -> BulkPublishResult:
     """Zatwierdza i publikuje sekwencyjnie wszystkie gotowe pozycje partii na OLX.
 
-    Obejmuje pozycje w statusie 'pending' i 'approved' - odkad "Zatwierdz"
-    przestalo byc osobnym krokiem operatora (`approve_and_publish`), masowa
-    publikacja musi rowniez zatwierdzac pozycje w locie, nie tylko juz
+    Obejmuje pozycje w statusie 'pending' i 'approved' - odkąd "Zatwierdź"
+    przestało być osobnym krokiem operatora (`approve_and_publish`), masowa
+    publikacja musi również zatwierdzać pozycje w locie, nie tylko już
     zatwierdzone.
 
-    SEKWENCYJNIE - celowo bez jakiejkolwiek wspolbieznosci (zaden
-    asyncio.gather/TaskGroup). OLX rotuje refresh token przy kazdym
-    odswiezeniu access tokenu (`olx.get_access_token`): dwa rownolegle
-    zadania trafiajace na wygasly token probowalyby odswiezyc go
-    jednoczesnie, a pierwsze uniewaznioby token, ktorego uzywa drugie - to
-    bezpowrotna utrata autoryzacji (naprawa tylko recznym OAuth). Miedzy
-    kolejnymi probami publikacji `asyncio.sleep(0.3)` - higiena wobec
-    obcego API (limit OLX 4500 zadan/5 min nie jest zagrozony: 150 gier to
+    SEKWENCYJNIE - celowo bez jakiejkolwiek współbieżności (żaden
+    asyncio.gather/TaskGroup). OLX rotuje refresh token przy każdym
+    odświeżeniu access tokenu (`olx.get_access_token`): dwa równoległe
+    zadania trafiające na wygasły token próbowałyby odświeżyć go
+    jednocześnie, a pierwsze unieważniłoby token, którego używa drugie - to
+    bezpowrotna utrata autoryzacji (naprawa tylko ręcznym OAuth). Między
+    kolejnymi próbami publikacji `asyncio.sleep(0.3)` - higiena wobec
+    obcego API (limit OLX 4500 zadań/5 min nie jest zagrożony: 150 gier to
     ok. 3% limitu).
 
-    Pozycja bez tytulu/ceny jest POMIJANA (liczona w `skipped`, z wpisem w
-    `errors`), a NIE probowana i liczona jako `failed` - brak tych danych
-    jest wada danych tej jednej pozycji (do poprawienia recznie na karcie),
-    nie objawem problemu systemowego, wiec nie powinna zuzywac proby ani
-    wplywac na circuit breaker.
+    Pozycja bez tytułu/ceny jest POMIJANA (liczona w `skipped`, z wpisem w
+    `errors`), a NIE próbowana i liczona jako `failed` - brak tych danych
+    jest wada danych tej jednej pozycji (do poprawienia ręcznie na karcie),
+    nie objawem problemu systemowego, więc nie powinna zużywać próby ani
+    wpływać na circuit breaker.
 
-    Kazdy inny blad pojedynczej pozycji (walidacja platformy/kategorii OLX,
-    blad API OLX) jest lapany, logowany (`logger.exception`) i zapisywany do
+    Każdy inny błąd pojedynczej pozycji (walidacja platformy/kategorii OLX,
+    błąd API OLX) jest łapany, logowany (`logger.exception`) i zapisywany do
     wyniku jako `failed` - NIE przerywa przebiegu, bo jedna wadliwa pozycja
-    nie moze zablokowac calej partii. Trzy takie bledy POD RZAD uruchamiaja
+    nie może zablokować całej partii. Trzy takie błędy POD RZAD uruchamiają
     circuit breaker: przebieg jest przerywany (`aborted=True`) zamiast
-    probowac pozostale pozycje, bo seria bledow zwykle oznacza problem
-    systemowy (wygasla autoryzacja, zla konfiguracja), a nie wade
-    pojedynczej pozycji - dobijanie reszty tworzyloby tylko kolejne
-    nieudane proby na produkcyjnym API OLX (OLX nie ma srodowiska
+    próbować pozostałe pozycje, bo seria błędów zwykle oznacza problem
+    systemowy (wygasła autoryzacja, zła konfiguracja), a nie wadę
+    pojedynczej pozycji - dobijanie reszty tworzyłoby tylko kolejne
+    nieudane próby na produkcyjnym API OLX (OLX nie ma środowiska
     testowego).
 
-    Wywoluje `approve_and_publish` per pozycja - zero duplikacji logiki
+    Wywołuje `approve_and_publish` per pozycja - zero duplikacji logiki
     zatwierdzania, publikacji, promocji do `game`/`listing`/`listing_photo`
     i mapowania statusu OLX.
 
@@ -1487,7 +1487,7 @@ async def publish_batch(session: AsyncSession, batch_id: int) -> BulkPublishResu
             continue
         if not title or price_pln is None:
             skipped += 1
-            errors.append((item_id, "Pominieto: brak tytulu lub ceny."))
+            errors.append((item_id, "Pominięto: brak tytułu lub ceny."))
             continue
 
         if attempted > 0:
@@ -1499,7 +1499,7 @@ async def publish_batch(session: AsyncSession, batch_id: int) -> BulkPublishResu
         except Exception as exc:
             logger.exception(
                 "Publikacja pozycji %s w partii %s (masowa publikacja) "
-                "nie powiodla sie.",
+                "nie powiodła się.",
                 item_id,
                 batch_id,
             )
@@ -1523,13 +1523,13 @@ async def publish_batch(session: AsyncSession, batch_id: int) -> BulkPublishResu
 
 
 async def publish_progress(session: AsyncSession, batch_id: int) -> tuple[int, int]:
-    """Zwraca postep masowej publikacji partii do paska postepu na `/ui`.
+    """Zwraca postęp masowej publikacji partii do paska postępu na `/ui`.
 
-    Liczony wylacznie z bazy (bez stanu w pamieci procesu) - pozycje juz
-    opublikowane wzgledem wszystkich pozycji, ktore sa (albo byly, zanim
-    zostaly opublikowane) w zasiegu `publish_batch` (pending/approved) w tej
+    Liczony wyłącznie z bazy (bez stanu w pamieci procesu) - pozycje już
+    opublikowane względem wszystkich pozycji, które są (albo byly, zanim
+    zostaly opublikowane) w zasięgu `publish_batch` (pending/approved) w tej
     partii. `approve_and_publish` zmienia status pozycji na 'published'
-    dopiero po udanym zapisie, wiec ten iloraz rosnie w miare przebiegu
+    dopiero po udanym zapisie, więc ten iloraz rosnie w miarę przebiegu
     `publish_batch`.
 
     Args:
@@ -1537,7 +1537,7 @@ async def publish_progress(session: AsyncSession, batch_id: int) -> tuple[int, i
         batch_id: Identyfikator partii.
 
     Returns:
-        Krotke (opublikowane, wszystkie): liczba pozycji ze statusem
+        Krotkę (opublikowane, wszystkie): liczba pozycji ze statusem
         'published' i suma pozycji 'published' + 'approved' + 'pending' w
         partii.
     """
@@ -1558,19 +1558,19 @@ async def publish_progress(session: AsyncSession, batch_id: int) -> tuple[int, i
 async def sync_advert_status(
     session: AsyncSession, listing_id: int
 ) -> ListingStatusView:
-    """Odswieza status oferty z OLX (GET /adverts/{id}) i zapisuje go lokalnie.
+    """Odświeża status oferty z OLX (GET /adverts/{id}) i zapisuje go lokalnie.
 
-    Status oferty MOZE zmienic sie po naszej stronie bez naszego udzialu -
-    moderacja z opoznieniem, wygasniecie po `valid_to`, zdjecie przez OLX
-    (zweryfikowane empirycznie: to samo ogloszenie mialo status "disabled"
-    zaraz po utworzeniu, a "active" kilka minut pozniej) - `publish_item`
-    zapisuje tylko migawke z chwili publikacji. Ta funkcja pobiera aktualny
+    Status oferty MOŻE zmienić się po naszej stronie bez naszego udziału -
+    moderacją z opóźnieniem, wygaśnięcie po `valid_to`, zdjęcie przez OLX
+    (zweryfikowane empirycznie: to samo ogłoszenie miało status "disabled"
+    zaraz po utworzeniu, a "active" kilka minut później) - `publish_item`
+    zapisuje tylko migawkę z chwili publikacji. Ta funkcja pobiera aktualny
     stan (`olx.fetch_advert`) i aktualizuje `listing.status` (po zmapowaniu
-    przez `_map_olx_status`) oraz `listing.olx_status` (surowa wartosc).
+    przez `_map_olx_status`) oraz `listing.olx_status` (surowa wartość).
 
-    `posted_at` jest ustawiane na `now()` TYLKO przy przejsciu w 'active' po
-    raz pierwszy (bylo NULL) - kolejne synchronizacje juz aktywnej oferty
-    (albo przejscie z 'active' do 'removed' po wygasnieciu) go nie ruszaja,
+    `posted_at` jest ustawiane na `now()` TYLKO przy przejściu w 'active' po
+    raz pierwszy (bylo NULL) - kolejne synchronizacje już aktywnej oferty
+    (albo przejście z 'active' do 'removed' po wygasnieciu) go nie ruszają,
     bo to nadal ten sam, pierwszy moment aktywacji.
 
     Args:
@@ -1582,10 +1582,10 @@ async def sync_advert_status(
 
     Raises:
         IntakeNotFoundError: Gdy oferta o podanym id nie istnieje.
-        IntakeValidationError: Gdy oferta nigdy nie zostala opublikowana na
-            OLX (brak `olx_advert_id`) - nie ma wtedy czego synchronizowac.
-        olx.OlxAuthError: Gdy brak waznej autoryzacji OLX.
-        olx.OlxApiError: Gdy wywolanie OLX sie nie powiedzie.
+        IntakeValidationError: Gdy oferta nigdy nie została opublikowana na
+            OLX (brak `olx_advert_id`) - nie ma wtedy czego synchronizować.
+        olx.OlxAuthError: Gdy brak ważnej autoryzacji OLX.
+        olx.OlxApiError: Gdy wywołanie OLX się nie powiedzie.
     """
     row = (
         await session.execute(
@@ -1598,8 +1598,8 @@ async def sync_advert_status(
     advert_id = row[0]
     if advert_id is None:
         raise IntakeValidationError(
-            f"Oferta o id {listing_id} nie zostala jeszcze opublikowana na "
-            "OLX (brak olx_advert_id) - nie ma czego synchronizowac."
+            f"Oferta o id {listing_id} nie została jeszcze opublikowana na "
+            "OLX (brak olx_advert_id) - nie ma czego synchronizować."
         )
 
     advert = await olx.fetch_advert(session, advert_id)
@@ -1637,7 +1637,7 @@ async def sync_advert_status(
 
 
 async def list_platforms(session: AsyncSession) -> list[PlatformView]:
-    """Zwraca aktywne platformy ze slownika, do listy wyboru w formularzu.
+    """Zwraca aktywne platformy ze słownika, do listy wyboru w formularzu.
 
     Args:
         session: Sesja bazy danych.
@@ -1661,11 +1661,11 @@ class SyncPendingResult(BaseModel):
     """Podsumowanie przebiegu reconcilera statusow.
 
     Attributes:
-        checked: Liczba listingow odpytanych w tym przebiegu.
-        activated: Liczba listingow, ktore przeszly w stan `active`.
-        still_pending: Liczba listingow nadal czekajacych na aktywacje.
-        terminal: Liczba listingow w stanie koncowym (`removed`).
-        failed: Liczba listingow, ktorych nie udalo sie odpytac.
+        checked: Liczba listingów odpytanych w tym przebiegu.
+        activated: Liczba listingów, które przeszły w stan `active`.
+        still_pending: Liczba listingów nadal czekających na aktywację.
+        terminal: Liczba listingów w stanie końcowym (`removed`).
+        failed: Liczba listingów, których nie udało się odpytać.
     """
 
     checked: int
@@ -1679,20 +1679,20 @@ async def sync_pending_listings(
     session: AsyncSession,
     batch_limit: int = 100,
 ) -> SyncPendingResult:
-    """Dosynchronizowuje statusy listingow czekajacych na aktywacje w OLX.
+    """Dosynchronizowuje statusy listingów czekających na aktywację w OLX.
 
-    OLX aktywuje ogloszenia asynchronicznie - `POST /adverts` zwraca
-    `disabled`, a `active` pojawia sie dopiero po kilku minutach. Bez tego
+    OLX aktywuje ogłoszenia asynchronicznie - `POST /adverts` zwraca
+    `disabled`, a `active` pojawia się dopiero po kilku minutach. Bez tego
     przebiegu listing zostaje w `pending` i jest niewidoczny dla FIFO
-    (`listing_fifo_idx` obejmuje wylacznie `status = 'active'`).
+    (`listing_fifo_idx` obejmuje wyłącznie `status = 'active'`).
 
-    Blad pojedynczego listingu nie przerywa przebiegu - pozostale musza
-    zostac odpytane, a nieudany rekord trafi do kolejnego uruchomienia.
+    Błąd pojedynczego listingu nie przerywa przebiegu - pozostałe musza
+    zostać odpytane, a nieudany rekord trafi do kolejnego uruchomienia.
 
     Args:
         session: Sesja bazodanowa.
-        batch_limit: Maksymalna liczba listingow odpytanych w jednym
-            przebiegu. Chroni przed wysypaniem tysiaca zadan do OLX naraz.
+        batch_limit: Maksymalna liczba listingów odpytanych w jednym
+            przebiegu. Chroni przed wysypaniem tysiąca zadań do OLX naraz.
 
     Returns:
         Podsumowanie liczbowe przebiegu.
@@ -1717,9 +1717,9 @@ async def sync_pending_listings(
         try:
             view = await sync_advert_status(session, listing_id)
         except Exception:
-            # Log obowiazkowy - cicha obsluga bledu ukrylaby blad konfiguracji
-            # (wygasly token, zmiana API) jako "nic sie nie stalo".
-            logger.exception("Nie udalo sie zsynchronizowac listingu %s.", listing_id)
+            # Log obowiązkowy - cicha obsługa błędu ukryłaby błąd konfiguracji
+            # (wygasły token, zmiana API) jako "nic się nie stało".
+            logger.exception("Nie udało się zsynchronizować listingu %s.", listing_id)
             failed += 1
             continue
 
@@ -1732,7 +1732,7 @@ async def sync_pending_listings(
 
     logger.info(
         "Reconciler: sprawdzono %d, aktywowano %d, nadal pending %d, "
-        "terminalne %d, bledy %d.",
+        "terminalne %d, błędy %d.",
         len(listing_ids),
         activated,
         still_pending,
@@ -1752,8 +1752,8 @@ async def get_item(session: AsyncSession, item_id: int) -> IntakeItemView:
     """Zwraca widok pojedynczej pozycji poczekalni.
 
     Publiczny odpowiednik `_get_item_view` - warstwa prezentacji potrzebuje
-    odczytac stan pozycji po nieudanej operacji, zeby przerenderowac karte
-    z komunikatem bledu.
+    odczytać stan pozycji po nieudanej operacji, żeby przerenderować kartę
+    z komunikatem błędu.
 
     Args:
         session: Sesja bazy danych.

@@ -1,6 +1,6 @@
 <div id="batch-items"{% if oob %} hx-swap-oob="true"{% endif %}>
     {% if not items and not extracting and batch_status == "review" %}
-    <p class="text-slate-500">Rozpoznawanie nie znalazlo zadnych egzemplarzy.</p>
+    <p class="text-slate-500">Rozpoznawanie nie znalazło żadnych egzemplarzy.</p>
     {% endif %}
     {% for item in items %}{% include "partials/item_card.html" %}{% endfor %}
 </div>

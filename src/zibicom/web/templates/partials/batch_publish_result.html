@@ -3,13 +3,13 @@
     {% if result %}
     <div class="text-sm rounded px-2 py-1 mb-3 border {% if result.aborted or result.failed %}bg-red-50 border-red-300 text-red-800{% else %}bg-emerald-50 border-emerald-300 text-emerald-800{% endif %}">
         <div>
-            Opublikowano {{ result.published }}, bledy {{ result.failed }}, pominieto {{ result.skipped }}.
+            Opublikowano {{ result.published }}, błędy {{ result.failed }}, pominięto {{ result.skipped }}.
         </div>
         {% if result.aborted %}
         <div class="font-medium mt-1">
-            Przebieg przerwany po serii bledow pod rzad (circuit breaker) -
-            sprawdz autoryzacje OLX (np. przycisk "Odswiez statusy OLX" w
-            naglowku) przed ponowna proba.
+            Przebieg przerwany po serii błędów pod rząd (circuit breaker) -
+            sprawdź autoryzację OLX (np. przycisk "Odśwież statusy OLX" w
+            nagłówku) przed ponowną próbą.
         </div>
         {% endif %}
         {% if result.errors %}

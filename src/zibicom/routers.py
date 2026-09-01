@@ -1,7 +1,7 @@
 """Endpointy HTTP warstwy poczekalni (intake).
 
-Upload zdjec, rozpoznanie AI, przeglad i zatwierdzanie pozycji przed
-publikacja na OLX.
+Upload zdjęć, rozpoznanie AI, przegląd i zatwierdzanie pozycji przed
+publikacją na OLX.
 """
 
 from __future__ import annotations
@@ -21,11 +21,11 @@ SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
 
 class BatchCreateResponse(BaseModel):
-    """Odpowiedz po utworzeniu partii.
+    """Odpowiedź po utworzeniu partii.
 
     Attributes:
         batch_id: Identyfikator utworzonej partii.
-        photo_count: Liczba wgranych zdjec.
+        photo_count: Liczba wgranych zdjęć.
     """
 
     batch_id: int
@@ -33,7 +33,7 @@ class BatchCreateResponse(BaseModel):
 
 
 class ExtractResponse(BaseModel):
-    """Odpowiedz po rozpoznaniu i zgrupowaniu zdjec partii.
+    """Odpowiedź po rozpoznaniu i zgrupowaniu zdjęć partii.
 
     Attributes:
         batch_id: Identyfikator partii.
@@ -45,24 +45,24 @@ class ExtractResponse(BaseModel):
 
 
 class OlxAuthorizeResponse(BaseModel):
-    """Odpowiedz z URL-em logowania OAuth do otwarcia w przegladarce.
+    """Odpowiedź z URL-em logowania OAuth do otwarcia w przeglądarce.
 
     Attributes:
-        url: Pelny URL logowania OLX.
+        url: Pełny URL logowania OLX.
     """
 
     url: str
 
 
 class OlxCategoryView(BaseModel):
-    """Zwiezly ksztalt kategorii OLX zwracany przez /api/olx/categories*.
+    """Zwięzły kształt kategorii OLX zwracany przez /api/olx/categories*.
 
     Attributes:
         id: Id kategorii OLX.
         name: Nazwa kategorii.
-        parent_id: Id kategorii-rodzica (0 dla kategorii glownych).
-        is_leaf: Czy w tej kategorii mozna wystawic ogloszenie (brak dzieci).
-        photos_limit: Maksymalna liczba zdjec dozwolona w tej kategorii.
+        parent_id: Id kategorii-rodzica (0 dla kategorii głównych).
+        is_leaf: Czy w tej kategorii można wystawić ogłoszenie (brak dzieci).
+        photos_limit: Maksymalna liczba zdjęć dozwolona w tej kategorii.
     """
 
     id: int
@@ -73,10 +73,10 @@ class OlxCategoryView(BaseModel):
 
 
 class OlxCategoryAttributeValueView(BaseModel):
-    """Jedna z dozwolonych wartosci atrybutu wyboru.
+    """Jedna z dozwolonych wartości atrybutu wyboru.
 
     Attributes:
-        code: Wartosc do wyslania w payloadzie ogloszenia (np. "xbox360").
+        code: Wartość do wysłania w payloadzie ogłoszenia (np. "xbox360").
         label: Czytelna etykieta (np. "Xbox 360").
     """
 
@@ -85,14 +85,14 @@ class OlxCategoryAttributeValueView(BaseModel):
 
 
 class OlxCategoryAttributeView(BaseModel):
-    """Zwiezly ksztalt atrybutu kategorii OLX.
+    """Zwięzły kształt atrybutu kategorii OLX.
 
     Attributes:
-        code: Kod atrybutu (klucz w payloadzie ogloszenia -
+        code: Kod atrybutu (klucz w payloadzie ogłoszenia -
             zibicom.olx.build_advert_payload).
         label: Czytelna nazwa atrybutu.
         required: Czy OLX wymaga podania tego atrybutu przy publikacji.
-        values: Dozwolone wartosci (atrybuty wyboru) - pusta lista dla
+        values: Dozwolone wartości (atrybuty wyboru) - pusta lista dla
             wolnego tekstu/liczby.
     """
 
@@ -103,13 +103,13 @@ class OlxCategoryAttributeView(BaseModel):
 
 
 class OlxCityView(BaseModel):
-    """Zwiezly ksztalt miasta OLX zwracany przez /api/olx/cities.
+    """Zwięzły kształt miasta OLX zwracany przez /api/olx/cities.
 
     Attributes:
         id: Id miasta OLX.
         name: Nazwa miasta.
         county: Powiat.
-        region_id: Id wojewodztwa.
+        region_id: Id województwa.
     """
 
     id: int
@@ -119,7 +119,7 @@ class OlxCityView(BaseModel):
 
 
 class OlxDistrictView(BaseModel):
-    """Zwiezly ksztalt dzielnicy OLX (GET /api/olx/cities/{city_id}/districts).
+    """Zwięzły kształt dzielnicy OLX (GET /api/olx/cities/{city_id}/districts).
 
     Attributes:
         id: Id dzielnicy OLX.
@@ -131,25 +131,25 @@ class OlxDistrictView(BaseModel):
 
 
 class OlxExchangeRequest(BaseModel):
-    """Kod autoryzacyjny przepisany recznie z paska adresu po przekierowaniu OLX.
+    """Kod autoryzacyjny przepisany ręcznie z paska adresu po przekierowaniu OLX.
 
     Attributes:
-        code: Wartosc parametru `code` z adresu, na ktory przekierowal OLX.
+        code: Wartość parametru `code` z adresu, na który przekierował OLX.
     """
 
     code: str
 
 
 def _http_exception_for(exc: intake.IntakeError | olx.OlxError) -> HTTPException:
-    """Mapuje wyjatek domenowy (poczekalni albo integracji OLX) na HTTPException.
+    """Mapuje wyjątek domenowy (poczekalni albo integracji OLX) na HTTPException.
 
     Args:
-        exc: Wyjatek zglosszony przez `zibicom.intake` albo `zibicom.olx`.
+        exc: Wyjątek zgłoszony przez `zibicom.intake` albo `zibicom.olx`.
 
     Returns:
-        HTTPException 404 dla braku zasobu, 400 dla naruszenia reguly
-        biznesowej (w tym braku autoryzacji OLX albo bledu OLX API) - do
-        rzucenia przez wywolujacego (`raise ... from exc`).
+        HTTPException 404 dla braku zasobu, 400 dla naruszenia reguły
+        biznesowej (w tym braku autoryzacji OLX albo błędu OLX API) - do
+        rzucenia przez wywołującego (`raise ... from exc`).
     """
     if isinstance(exc, intake.IntakeNotFoundError):
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
@@ -165,10 +165,10 @@ def _http_exception_for(exc: intake.IntakeError | olx.OlxError) -> HTTPException
 async def create_batch(
     session: SessionDep,
     files: Annotated[
-        list[UploadFile], File(description="Zdjecia w kolejnosci wgrania.")
+        list[UploadFile], File(description="Zdjęcia w kolejności wgrania.")
     ],
 ) -> BatchCreateResponse:
-    """Tworzy nowa partie poczekalni i wgrywa jej zdjecia do R2."""
+    """Tworzy nową partię poczekalni i wgrywa jej zdjęcia do R2."""
     payload = [(f.filename, await f.read()) for f in files]
     try:
         batch_id = await intake.create_batch(session, payload)
@@ -193,7 +193,7 @@ async def list_batches(session: SessionDep) -> list[intake.BatchView]:
     tags=["intake"],
 )
 async def extract_batch(batch_id: int, session: SessionDep) -> ExtractResponse:
-    """Rozpoznaje zdjecia partii przez AI i grupuje je w pozycje."""
+    """Rozpoznaje zdjęcia partii przez AI i grupuje je w pozycje."""
     try:
         item_count = await intake.extract_batch(session, batch_id)
     except intake.IntakeError as exc:
@@ -222,7 +222,7 @@ async def list_items(batch_id: int, session: SessionDep) -> list[intake.IntakeIt
 async def update_item(
     item_id: int, payload: intake.IntakeItemUpdate, session: SessionDep
 ) -> intake.IntakeItemView:
-    """Zapisuje reczna korekte pol pozycji poczekalni."""
+    """Zapisuje ręczną korektę pól pozycji poczekalni."""
     try:
         return await intake.update_item(session, item_id, payload)
     except intake.IntakeError as exc:
@@ -235,7 +235,7 @@ async def update_item(
     tags=["intake"],
 )
 async def approve_item(item_id: int, session: SessionDep) -> intake.IntakeItemView:
-    """Zatwierdza pozycje poczekalni po walidacji kompletnosci danych."""
+    """Zatwierdza pozycję poczekalni po walidacji kompletności danych."""
     try:
         return await intake.approve_item(session, item_id)
     except intake.IntakeError as exc:
@@ -248,7 +248,7 @@ async def approve_item(item_id: int, session: SessionDep) -> intake.IntakeItemVi
     tags=["intake"],
 )
 async def reject_item(item_id: int, session: SessionDep) -> intake.IntakeItemView:
-    """Odrzuca pozycje poczekalni."""
+    """Odrzuca pozycję poczekalni."""
     try:
         return await intake.reject_item(session, item_id)
     except intake.IntakeError as exc:
@@ -261,7 +261,7 @@ async def reject_item(item_id: int, session: SessionDep) -> intake.IntakeItemVie
     tags=["intake"],
 )
 async def publish_item(item_id: int, session: SessionDep) -> intake.IntakeItemView:
-    """Publikuje zatwierdzona pozycje na OLX i promuje ja do tabel produkcyjnych."""
+    """Publikuje zatwierdzoną pozycję na OLX i promuje ją do tabel produkcyjnych."""
     try:
         return await intake.publish_item(session, item_id)
     except (intake.IntakeError, olx.OlxError) as exc:
@@ -276,7 +276,7 @@ async def publish_item(item_id: int, session: SessionDep) -> intake.IntakeItemVi
 async def approve_and_publish_item(
     item_id: int, session: SessionDep
 ) -> intake.IntakeItemView:
-    """Zatwierdza i publikuje pozycje poczekalni w jednym kroku."""
+    """Zatwierdza i publikuje pozycję poczekalni w jednym kroku."""
     try:
         return await intake.approve_and_publish(session, item_id)
     except (intake.IntakeError, olx.OlxError) as exc:
@@ -289,14 +289,14 @@ async def approve_and_publish_item(
     tags=["intake"],
 )
 async def preview_publish_item(item_id: int, session: SessionDep) -> dict[str, Any]:
-    """Buduje podglad payloadu OLX dla pozycji, BEZ publikacji.
+    """Buduje podgląd payloadu OLX dla pozycji, BEZ publikacji.
 
-    Dokladnie ten sam payload, ktory poszedlby do OLX przy POST
+    Dokładnie ten sam payload, który poszedłby do OLX przy POST
     .../publish (te same funkcje: build_title, build_description,
-    build_advert_payload), ale bez wywolania create_advert - do
-    diagnozowania bledow walidacji OLX bez zuzywania proby na prawdziwej
-    publikacji. Dostepne dla pozycji w dowolnym statusie (nie tylko
-    'approved'), zeby dalo sie zdiagnozowac problem przed zatwierdzeniem.
+    build_advert_payload), ale bez wywołania create_advert - do
+    diagnozowania błędów walidacji OLX bez zużywania próby na prawdziwej
+    publikacji. Dostępne dla pozycji w dowolnym statusie (nie tylko
+    'approved'), żeby dało się zdiagnozować problem przed zatwierdzeniem.
     """
     try:
         return await intake.preview_publish_item(session, item_id)
@@ -313,9 +313,9 @@ async def publish_batch(batch_id: int, session: SessionDep) -> intake.BulkPublis
     """Zatwierdza i publikuje sekwencyjnie wszystkie gotowe pozycje partii na OLX.
 
     Obejmuje pozycje w statusie 'pending' i 'approved'. Sekwencyjnie i z
-    pauza miedzy probami (`intake.publish_batch`) - patrz tamten docstring
-    o rotacji refresh tokenu OLX. Blad pojedynczej pozycji nie przerywa
-    przebiegu; seria 3 bledow pod rzad uruchamia circuit breaker
+    pauzą między próbami (`intake.publish_batch`) - patrz tamten docstring
+    o rotacji refresh tokenu OLX. Błąd pojedynczej pozycji nie przerywa
+    przebiegu; seria 3 błędów pod rząd uruchamia circuit breaker
     (`aborted=True` w odpowiedzi).
     """
     try:
@@ -332,17 +332,17 @@ async def publish_batch(batch_id: int, session: SessionDep) -> intake.BulkPublis
 async def sync_pending_listings(
     session: SessionDep, batch_limit: int = 100
 ) -> intake.SyncPendingResult:
-    """Dosynchronizowuje oferty czekajace na aktywacje w OLX.
+    """Dosynchronizowuje oferty czekające na aktywację w OLX.
 
-    OLX aktywuje ogloszenia asynchronicznie - `POST /adverts` zwraca
-    `disabled`, a `active` pojawia sie dopiero kilka minut pozniej. Bez tego
+    OLX aktywuje ogłoszenia asynchronicznie - `POST /adverts` zwraca
+    `disabled`, a `active` pojawia się dopiero kilka minut później. Bez tego
     przebiegu oferta zostaje w `pending` i jest niewidoczna dla FIFO
-    (listing_fifo_idx obejmuje wylacznie status='active').
+    (listing_fifo_idx obejmuje wyłącznie status='active').
 
-    Sciezka statyczna MUSI byc zadeklarowana przed
+    Ścieżka statyczna MUSI być zadeklarowana przed
     /api/listings/{listing_id}/sync-status - FastAPI dopasowuje trasy w
-    kolejnosci rejestracji i inaczej potraktowalby "sync-pending" jako
-    wartosc listing_id.
+    kolejności rejestracji i inaczej potraktowałby "sync-pending" jako
+    wartość listing_id.
     """
     try:
         return await intake.sync_pending_listings(
@@ -360,13 +360,13 @@ async def sync_pending_listings(
 async def sync_advert_status(
     listing_id: int, session: SessionDep
 ) -> intake.ListingStatusView:
-    """Odswieza status oferty z OLX (GET /adverts/{id}) i zapisuje go lokalnie.
+    """Odświeża status oferty z OLX (GET /adverts/{id}) i zapisuje go lokalnie.
 
-    Status oferty moze zmienic sie po naszej stronie bez naszego udzialu
-    (moderacja, wygasniecie, zdjecie przez OLX) - ten endpoint pobiera
-    aktualny stan i mapuje go na nasz listing_status, m.in. zeby FIFO przy
-    sprzedazy stacjonarnej (listing_fifo_idx, WHERE status='active')
-    faktycznie widzialo aktywne oferty.
+    Status oferty może zmienić się po naszej stronie bez naszego udziału
+    (moderacja, wygaśnięcie, zdjęcie przez OLX) - ten endpoint pobiera
+    aktualny stan i mapuje go na nasz listing_status, m.in. żeby FIFO przy
+    sprzedaży stacjonarnej (listing_fifo_idx, WHERE status='active')
+    faktycznie widziało aktywne oferty.
     """
     try:
         return await intake.sync_advert_status(session, listing_id)
@@ -380,7 +380,7 @@ async def sync_advert_status(
     tags=["platforms"],
 )
 async def list_platforms(session: SessionDep) -> list[intake.PlatformView]:
-    """Zwraca slownik platform do listy wyboru."""
+    """Zwraca słownik platform do listy wyboru."""
     return await intake.list_platforms(session)
 
 
@@ -390,7 +390,7 @@ async def list_platforms(session: SessionDep) -> list[intake.PlatformView]:
     tags=["olx"],
 )
 async def olx_authorize() -> OlxAuthorizeResponse:
-    """Zwraca URL logowania OAuth OLX do recznego otwarcia w przegladarce."""
+    """Zwraca URL logowania OAuth OLX do ręcznego otwarcia w przeglądarce."""
     return OlxAuthorizeResponse(url=olx.build_authorize_url())
 
 
@@ -416,7 +416,7 @@ async def olx_exchange(
     tags=["olx"],
 )
 async def olx_status(session: SessionDep) -> olx.OlxStatus:
-    """Zwraca stan autoryzacji OLX (bez wywolywania API OLX)."""
+    """Zwraca stan autoryzacji OLX (bez wywoływania API OLX)."""
     return await olx.get_status(session)
 
 
@@ -430,9 +430,9 @@ async def olx_categories(
 ) -> list[dict[str, Any]]:
     """Zwraca kategorie OLX na jednym poziomie drzewa (dzieci `parent_id`).
 
-    Bez `parent_id` zwraca kategorie glowne. Ogloszenie mozna wystawic
-    tylko w kategorii z `is_leaf=true` - do znalezienia takiej bez recznego
-    klikania po drzewie sluzy GET /api/olx/categories/search.
+    Bez `parent_id` zwraca kategorie główne. Ogłoszenie można wystawić
+    tylko w kategorii z `is_leaf=true` - do znalezienia takiej bez ręcznego
+    klikania po drzewie służy GET /api/olx/categories/search.
     """
     try:
         return await olx.fetch_categories(session, parent_id=parent_id, q=q)
@@ -446,10 +446,10 @@ async def olx_categories(
     tags=["olx"],
 )
 async def olx_categories_search(session: SessionDep, q: str) -> list[dict[str, Any]]:
-    """Rekurencyjnie przeszukuje cale drzewo kategorii OLX pod katem lisci.
+    """Rekurencyjnie przeszukuje całe drzewo kategorii OLX pod kątem liści.
 
-    Zwraca tylko kategorie z `is_leaf=true` (jedyne, w ktorych mozna
-    wystawic ogloszenie), ktorych nazwa zawiera `q`.
+    Zwraca tylko kategorie z `is_leaf=true` (jedyne, w których można
+    wystawić ogłoszenie), których nazwa zawiera `q`.
     """
     try:
         return await olx.search_leaf_categories(session, q)
@@ -467,8 +467,8 @@ async def olx_category_attributes(
 ) -> list[dict[str, Any]]:
     """Zwraca wymagane i opcjonalne atrybuty danej kategorii OLX.
 
-    Do ustalenia, jak przekazac w payloadzie ogloszenia cechy, ktorych OLX
-    nie wyraza przez osobna kategorie (np. konkretna konsola w obrebie
+    Do ustalenia, jak przekazać w payloadzie ogłoszenia cechy, których OLX
+    nie wyraża przez osobną kategorię (np. konkretna konsola w obrębie
     kategorii producenta - patrz migracja 0005_olx_category_mapping.sql).
     """
     try:
@@ -485,7 +485,7 @@ async def olx_category_attributes(
 async def olx_cities(session: SessionDep, q: str | None = None) -> list[dict[str, Any]]:
     """Wyszukuje miasta OLX po nazwie - do ustalenia city_id.
 
-    Wyszukiwanie ignoruje wielkosc liter i znaki diakrytyczne.
+    Wyszukiwanie ignoruje wielkość liter i znaki diakrytyczne.
     """
     try:
         return await olx.fetch_cities(session, q)
@@ -501,8 +501,8 @@ async def olx_cities(session: SessionDep, q: str | None = None) -> list[dict[str
 async def olx_city_districts(city_id: int, session: SessionDep) -> list[dict[str, Any]]:
     """Zwraca dzielnice danego miasta OLX - do ustalenia district_id.
 
-    Puste dla miast bez podzialu na dzielnice (wiekszosc malych
-    miejscowosci) - to prawidlowy wynik, nie blad.
+    Puste dla miast bez podziału na dzielnice (większość małych
+    miejscowości) - to prawidłowy wynik, nie błąd.
     """
     try:
         return await olx.fetch_districts(session, city_id)

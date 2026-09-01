@@ -13,19 +13,19 @@
     <input type="file" name="files" multiple accept="image/*" required
            class="text-sm">
     <button type="submit" class="px-3 py-1 bg-slate-800 text-white rounded text-sm">
-        Utworz partie
+        Utwórz partię
     </button>
 </form>
 
 {% if not batches %}
-<p class="text-slate-500">Brak partii. Wgraj zdjecia, zeby utworzyc pierwsza.</p>
+<p class="text-slate-500">Brak partii. Wgraj zdjęcia, żeby utworzyć pierwszą.</p>
 {% else %}
 <table class="w-full text-left border-collapse">
     <thead>
         <tr class="border-b text-sm text-slate-500">
             <th class="py-2 pr-4">ID</th>
             <th class="py-2 pr-4">Data</th>
-            <th class="py-2 pr-4">Zdjecia</th>
+            <th class="py-2 pr-4">Zdjęcia</th>
             <th class="py-2 pr-4">Pozycje</th>
             <th class="py-2 pr-4">Statusy</th>
         </tr>

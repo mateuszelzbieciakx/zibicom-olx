@@ -1,4 +1,4 @@
-"""Punkt wejscia aplikacji FastAPI."""
+"""Punkt wejścia aplikacji FastAPI."""
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -20,14 +20,14 @@ from zibicom.web.routes import router as web_router
 
 
 class HealthResponse(BaseModel):
-    """Odpowiedz endpointu /health.
+    """Odpowiedź endpointu /health.
 
     Attributes:
-        status: Ogolny stan aplikacji.
+        status: Ogólny stan aplikacji.
         version: Wersja aplikacji.
-        environment: Nazwa srodowiska z konfiguracji.
-        database: Stan polaczenia z baza danych.
-        detail: Komunikat bledu, gdy baza jest niedostepna.
+        environment: Nazwa środowiska z konfiguracji.
+        database: Stan połączenia z bazą danych.
+        detail: Komunikat błędu, gdy baza jest niedostępna.
     """
 
     status: Literal["ok", "degraded"]
@@ -39,13 +39,13 @@ class HealthResponse(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Zarzadza cyklem zycia aplikacji.
+    """Zarządza cyklem życia aplikacji.
 
     Args:
         app: Instancja aplikacji FastAPI.
 
     Yields:
-        Sterowanie na czas dzialania aplikacji.
+        Sterowanie na czas działania aplikacji.
     """
     yield
     await dispose_engine()
@@ -55,7 +55,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(
     title="zibicom-olx",
     version=__version__,
-    summary="Synchronizacja inwentarza sklepu z ogloszeniami OLX.",
+    summary="Synchronizacja inwentarza sklepu z ogłoszeniami OLX.",
     lifespan=lifespan,
 )
 
@@ -67,13 +67,13 @@ app.include_router(web_router)
 async def health(
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> JSONResponse:
-    """Sprawdza dostepnosc aplikacji i bazy danych.
+    """Sprawdza dostępność aplikacji i bazy danych.
 
     Args:
         session: Sesja bazy danych wstrzykiwana przez FastAPI.
 
     Returns:
-        Odpowiedz 200, gdy baza odpowiada, albo 503 w przeciwnym razie.
+        Odpowiedź 200, gdy baza odpowiada, albo 503 w przeciwnym razie.
     """
     settings = get_settings()
     try:

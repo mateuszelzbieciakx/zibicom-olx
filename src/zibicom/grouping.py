@@ -1,7 +1,7 @@
-"""Grupowanie rozpoznanych zdjec partii w egzemplarze do zatwierdzenia.
+"""Grupowanie rozpoznanych zdjęć partii w egzemplarze do zatwierdzenia.
 
-Funkcje w tym module sa czyste (bez bazy danych i bez sieci) - cala logika
-grupowania i scalania jest w pelni testowalna na samych obiektach
+Funkcje w tym module są czyste (bez bazy danych i bez sieci) - cała logika
+grupowania i scalania jest w pełni testowalna na samych obiektach
 PhotoExtraction.
 """
 
@@ -22,20 +22,20 @@ _WHITESPACE_RE = re.compile(r"\s+")
 
 
 class GroupedListing(BaseModel):
-    """Jeden przyszly egzemplarz zlozony z jednego lub wielu zdjec.
+    """Jeden przyszły egzemplarz złożony z jednego lub wielu zdjęć.
 
     Attributes:
-        title: Scalony tytul (pierwszy niepusty w grupie), albo None.
-        platform: Platforma wybrana wiekszoscia glosow zdjec w grupie.
+        title: Scalony tytuł (pierwszy niepusty w grupie), albo None.
+        platform: Platforma wybrana większością głosów zdjęć w grupie.
         platform_other: Opis platformy, gdy platform == "other".
         price_pln: Pierwsza odczytana cena w grupie, albo None.
-        condition: 'new', jesli ktorekolwiek zdjecie wskazuje 'new',
+        condition: 'new', jeśli którekolwiek zdjęcie wskazuje 'new',
             w przeciwnym razie 'used'.
-        warning: Zbiorcze ostrzezenie tekstowe do podswietlenia w widoku
-            zatwierdzania (np. brak ceny, niepewny tytul); None, gdy grupa
-            nie budzi zadnych watpliwosci.
-        photos: Zrodlowe wyniki rozpoznania zdjec wchodzacych w sklad grupy,
-            w kolejnosci zrobienia.
+        warning: Zbiorcze ostrzeżenie tekstowe do podświetlenia w widoku
+            zatwierdzania (np. brak ceny, niepewny tytuł); None, gdy grupa
+            nie budzi żadnych wątpliwości.
+        photos: Źródłowe wyniki rozpoznania zdjęć wchodzących w skład grupy,
+            w kolejności zrobienia.
     """
 
     title: str | None
@@ -48,14 +48,14 @@ class GroupedListing(BaseModel):
 
 
 def normalize_title(title: str) -> str:
-    """Normalizuje tytul do porownan: bez diakrytykow, interpunkcji, lowercase.
+    """Normalizuje tytuł do porównań: bez diakrytyków, interpunkcji, lowercase.
 
     Args:
-        title: Surowy tytul odczytany z okladki.
+        title: Surowy tytuł odczytany z okładki.
 
     Returns:
-        Znormalizowana postac tytulu, uzywana wylacznie do porownan
-        rownosci (nie do wyswietlania).
+        Znormalizowana postać tytułu, używana wyłącznie do porównań
+        równości (nie do wyświetlania).
     """
     without_diacritics = unicodedata.normalize("NFKD", title)
     ascii_only = without_diacritics.encode("ascii", "ignore").decode("ascii")
@@ -65,43 +65,43 @@ def normalize_title(title: str) -> str:
 
 
 class IncrementalGrouper:
-    """Grupuje zdjecia jednej partii w egzemplarze przyrostowo, zdjecie po zdjeciu.
+    """Grupuje zdjęcia jednej partii w egzemplarze przyrostowo, zdjęcie po zdjęciu.
 
-    Rownowaznik `group_photos` dla ekstrakcji przyrostowej (partie
-    zapisywane do intake_item w miare przetwarzania, zamiast dopiero po
-    rozpoznaniu calej partii) - identyczna regula granicy grupy
-    (is_front, z regula zapasowa po tytule - patrz `group_photos`), ale
-    zwraca kazdy domkniety egzemplarz NATYCHMIAST po pojawieniu sie
-    zdjecia, ktore zaczyna kolejna grupe, zamiast czekac na koniec calej
+    Równoważnik `group_photos` dla ekstrakcji przyrostowej (partie
+    zapisywane do intake_item w miarę przetwarzania, zamiast dopiero po
+    rozpoznaniu całej partii) - identyczna reguła granicy grupy
+    (is_front, z regułą zapasową po tytule - patrz `group_photos`), ale
+    zwraca każdy domknięty egzemplarz NATYCHMIAST po pojawieniu się
+    zdjęcia, które zaczyna kolejną grupę, zamiast czekać na koniec całej
     partii.
 
-    Stan (biezaca, jeszcze niedomknieta grupa i ostatni znormalizowany
-    tytul) jest prywatny. Przy wznowieniu przerwanej ekstrakcji odtwarza
-    sie go, podajac (`add_photo`) od nowa WSZYSTKIE zdjecia partii w
-    kolejnosci - takze te, ktorych domkniete grupy zostaly juz zapisane w
-    poprzednim przebiegu (wywolujacy po prostu ignoruje zwrocone dla nich
-    `GroupedListing` i nie zapisuje ich drugi raz) - inaczej regula
-    zapasowa po tytule (dla is_front=None) dzialalaby na niepelnej
-    historii i mogla wyznaczyc inna granice niz w pierwszym przebiegu.
+    Stan (bieżąca, jeszcze niedomknięta grupa i ostatni znormalizowany
+    tytuł) jest prywatny. Przy wznowieniu przerwanej ekstrakcji odtwarza
+    się go, podając (`add_photo`) od nowa WSZYSTKIE zdjęcia partii w
+    kolejności - także te, których domknięte grupy zostały już zapisane w
+    poprzednim przebiegu (wywołujący po prostu ignoruje zwrócone dla nich
+    `GroupedListing` i nie zapisuje ich drugi raz) - inaczej reguła
+    zapasowa po tytule (dla is_front=None) działałaby na niepełnej
+    historii i mogła wyznaczyć inną granicę niż w pierwszym przebiegu.
     """
 
     def __init__(self) -> None:
-        """Inicjuje pusty stan - bez otwartej grupy i bez znanego tytulu."""
+        """Inicjuje pusty stan - bez otwartej grupy i bez znanego tytułu."""
         self._current: list[PhotoExtraction] = []
         self._last_title_norm: str | None = None
 
     def add_photo(self, photo: PhotoExtraction) -> GroupedListing | None:
-        """Dolacza kolejne zdjecie i zwraca domkniety egzemplarz, jesli ten je zamknal.
+        """Dołącza kolejne zdjęcie i zwraca domknięty egzemplarz, jeśli ten je zamknął.
 
         Args:
-            photo: Wynik rozpoznania kolejnego zdjecia partii, w kolejnosci
+            photo: Wynik rozpoznania kolejnego zdjęcia partii, w kolejności
                 zrobienia.
 
         Returns:
-            Scalony POPRZEDNI egzemplarz, jesli to zdjecie zaczyna nowa
-            grupe (samo trafia do nowej, biezacej grupy) - None, gdy
-            dolaczylo do wciaz otwartej grupy (jeszcze nie ma czego
-            zapisywac).
+            Scalony POPRZEDNI egzemplarz, jeśli to zdjęcie zaczyna nową
+            grupę (samo trafia do nowej, bieżącej grupy) - None, gdy
+            dołączyło do wciąż otwartej grupy (jeszcze nie ma czego
+            zapisywać).
         """
         current_title_norm = normalize_title(photo.title) if photo.title else None
 
@@ -124,11 +124,11 @@ class IncrementalGrouper:
         return closed
 
     def close(self) -> GroupedListing | None:
-        """Domyka ostatnia, wciaz otwarta grupe (koniec partii).
+        """Domyka ostatnią, wciąż otwartą grupę (koniec partii).
 
         Returns:
             Scalony ostatni egzemplarz, albo None, gdy nie ma otwartej
-            grupy (jeszcze zadne zdjecie nie zostalo podane).
+            grupy (jeszcze żadne zdjęcie nie zostało podane).
         """
         if not self._current:
             return None
@@ -138,30 +138,30 @@ class IncrementalGrouper:
 
 
 def group_photos(extractions: list[PhotoExtraction]) -> list[GroupedListing]:
-    """Grupuje kolejne zdjecia jednej partii w egzemplarze.
+    """Grupuje kolejne zdjęcia jednej partii w egzemplarze.
 
-    Granica miedzy egzemplarzami to zdjecie PRZODU pudelka (is_front=True),
-    NIE zmiana tytulu. To krytyczne: sklep trzyma po kilka kopii jednego
-    wydania, a dwie kopie sfotografowane po kolei maja identyczny tytul -
-    grupowanie po tytule scalaloby je w jedna pozycje i zgubilo druga
-    oferte razem z jej cena.
+    Granica między egzemplarzami to zdjęcie PRZODU pudełka (is_front=True),
+    NIE zmiana tytułu. To krytyczne: sklep trzyma po kilka kopii jednego
+    wydania, a dwie kopie sfotografowane po kolei mają identyczny tytuł -
+    grupowanie po tytule scalałoby je w jedną pozycję i zgubiło drugą
+    ofertę razem z jej ceną.
 
-    Gdy is_front jest None (model niepewny, ktora to strona), obowiazuje
-    regula zapasowa: inny znormalizowany tytul niz w biezacej grupie
-    oznacza nowy egzemplarz. Zdjecie bez tytulu nigdy samo z siebie nie
-    zaczyna nowej grupy - dolacza do biezacej.
+    Gdy is_front jest None (model niepewny, która to strona), obowiązuje
+    reguła zapasowa: inny znormalizowany tytuł niż w bieżącej grupie
+    oznacza nowy egzemplarz. Zdjęcie bez tytułu nigdy samo z siebie nie
+    zaczyna nowej grupy - dołącza do bieżącej.
 
     Cienka warstwa nad `IncrementalGrouper` (jeden przebieg zamiast
-    zwracania kazdej grupy osobno) - patrz tamten docstring po pelny opis
+    zwracania każdej grupy osobno) - patrz tamten docstring po pełny opis
     algorytmu.
 
     Args:
-        extractions: Wyniki rozpoznania kolejnych zdjec partii, w
-            kolejnosci zrobienia (przod, tyl, [wnetrze], ...).
+        extractions: Wyniki rozpoznania kolejnych zdjęć partii, w
+            kolejności zrobienia (przód, tył, [wnętrze], ...).
 
     Returns:
-        Lista zgrupowanych egzemplarzy, w kolejnosci wystapienia pierwszego
-        zdjecia kazdej grupy. Pusta lista dla pustej partii.
+        Lista zgrupowanych egzemplarzy, w kolejności wystąpienia pierwszego
+        zdjęcia każdej grupy. Pusta lista dla pustej partii.
     """
     grouper = IncrementalGrouper()
     groups = [
@@ -176,13 +176,13 @@ def group_photos(extractions: list[PhotoExtraction]) -> list[GroupedListing]:
 
 
 def _merge_group(photos: list[PhotoExtraction]) -> GroupedListing:
-    """Scala zdjecia jednej grupy w opis pojedynczego egzemplarza.
+    """Scala zdjęcia jednej grupy w opis pojedynczego egzemplarza.
 
     Args:
-        photos: Zdjecia nalezace do jednego egzemplarza (co najmniej jedno).
+        photos: Zdjęcia należące do jednego egzemplarza (co najmniej jedno).
 
     Returns:
-        Scalony opis egzemplarza wraz ze zbiorczym ostrzezeniem.
+        Scalony opis egzemplarza wraz ze zbiorczym ostrzeżeniem.
     """
     title_source = next((p for p in photos if p.title), None)
     title = title_source.title if title_source else None
@@ -205,15 +205,15 @@ def _merge_group(photos: list[PhotoExtraction]) -> GroupedListing:
         None,
     )
 
-    # Pewnosc bierzemy WYLACZNIE ze zdjecia, ktore faktycznie dostarczylo
-    # wartosc - zdjecie tylu pudelka nie widzi cenowki ani tytulu, wiec jego
-    # (z definicji niepewne) flagi nie moga obnizac pewnosci wartosci
+    # Pewność bierzemy WYŁĄCZNIE ze zdjęcia, które faktycznie dostarczyło
+    # wartość - zdjęcie tyłu pudełka nie widzi cenówki ani tytułu, więc jego
+    # (z definicji niepewne) flagi nie mogą obniżać pewności wartości
     # odczytanej z przodu.
     issues: list[str] = []
     if title_source is None:
-        issues.append("brak tytulu")
+        issues.append("brak tytułu")
     elif not title_source.title_confident:
-        issues.append("niepewny tytul")
+        issues.append("niepewny tytuł")
     if price_source is None:
         issues.append("brak ceny")
     elif not price_source.price_confident:

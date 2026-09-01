@@ -1,7 +1,7 @@
-"""Router zwracajacy HTML dla interfejsu pracownika.
+"""Router zwracający HTML dla interfejsu pracownika.
 
-Rownolegly do JSON API w `zibicom.routers` - te same funkcje serwisowe,
-inna reprezentacja. Logika biznesowa nie moze istniec w dwoch kopiach.
+Równoległy do JSON API w `zibicom.routers` - te same funkcje serwisowe,
+inna reprezentacja. Logika biznesowa nie może istnieć w dwóch kopiach.
 """
 
 from __future__ import annotations
@@ -26,22 +26,22 @@ logger = logging.getLogger(__name__)
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
-# Partie, ktorych ekstrakcja aktualnie biegnie w tle (guard idempotencji dla
-# POST /batches/{id}/extract - zyje tylko w pamieci procesu, patrz komentarz
-# przy _run_extraction o utracie postepu przy restarcie).
+# Partie, których ekstrakcja aktualnie biegnie w tle (guard idempotencji dla
+# POST /batches/{id}/extract - żyje tylko w pamięci procesu, patrz komentarz
+# przy _run_extraction o utracie postępu przy restarcie).
 _running: set[int] = set()
 
 # Analogiczny guard idempotencji dla POST /batches/{id}/publish-all - drugi
-# klik/zdarzenie HTMX, dopoki poprzedni przebieg nie skonczy, nie wystawia
-# drugiego zadania w tle (patrz uzasadnienie sekwencyjnosci w
-# intake.publish_batch: rownolegle zadania OLX moga trwale uniewaznic
-# autoryzacje przez wyscig o rotacje refresh tokenu).
+# klik/zdarzenie HTMX, dopóki poprzedni przebieg nie skończy, nie wystawia
+# drugiego zadania w tle (patrz uzasadnienie sekwencyjności w
+# intake.publish_batch: równoległe zadania OLX mogą trwale unieważnić
+# autoryzację przez wyścig o rotację refresh tokenu).
 _running_publish: set[int] = set()
 
-# Wynik ostatniego zakonczonego przebiegu `publish_batch`, do jednorazowego
+# Wynik ostatniego zakończonego przebiegu `publish_batch`, do jednorazowego
 # pokazania w podsumowaniu po tym, jak batch_id zniknie z _running_publish -
 # `batch_publish_progress` go odczytuje i usuwa (patrz tamten docstring).
-# Zyje tylko w pamieci procesu, tak samo jak _running/_running_publish.
+# Żyje tylko w pamięci procesu, tak samo jak _running/_running_publish.
 _publish_results: dict[int, intake.BulkPublishResult] = {}
 
 
@@ -54,15 +54,15 @@ async def _card(
     """Renderuje fragment karty pozycji.
 
     Args:
-        request: Zadanie HTTP wymagane przez Jinja2Templates.
-        session: Sesja bazodanowa (do slownika platform).
-        item: Widok pozycji do wyswietlenia.
-        error: Komunikat bledu domenowego do pokazania w karcie.
+        request: Żądanie HTTP wymagane przez Jinja2Templates.
+        session: Sesja bazodanowa (do słownika platform).
+        item: Widok pozycji do wyświetlenia.
+        error: Komunikat błędu domenowego do pokazania w karcie.
 
     Returns:
         Fragment HTML karty, zawsze ze statusem 200 - HTMX podmienia DOM
-        wylacznie przy 2xx, wiec blad walidacji musi przyjsc jako poprawna
-        odpowiedz z trescia bledu, nie jako HTTPException.
+        wyłącznie przy 2xx, więc błąd walidacji musi przyjść jako poprawna
+        odpowiedź z treścią błędu, nie jako HTTPException.
     """
     return templates.TemplateResponse(
         request=request,
@@ -96,38 +96,38 @@ async def _batch_status(session: AsyncSession, batch_id: int) -> str:
 
 
 async def _run_extraction(batch_id: int) -> None:
-    """Uruchamia `extract_batch` w tle, na wlasnej sesji DB.
+    """Uruchamia `extract_batch` w tle, na własnej sesji DB.
 
-    Wlasna sesja, bo ta z zadania HTTP jest zamykana, gdy tylko odpowiedz
-    zostanie wyslana - `extract_batch` musi dzialac dlugo po tym momencie.
+    Własna sesja, bo ta z zadania HTTP jest zamykana, gdy tylko odpowiedź
+    zostanie wysłana - `extract_batch` musi działać długo po tym momencie.
 
-    Restart procesu w trakcie ekstrakcji NIE gubi juz zrobionej pracy -
-    `intake.extract_batch` jest wznawialna (commituje kazde rozpoznane
-    zdjecie i kazdy domkniety egzemplarz na biezaco) - traci sie tylko
-    fakt bycia "w toku": `_running` zyje wylacznie w pamieci procesu, wiec
-    po restarcie batch_detail pokaze przycisk "Wznow rozpoznawanie"
-    zamiast paska postepu, dopoki operator go nie kliknie. Docelowo:
-    prawdziwa kolejka zadan (np. arq/celery) zamiast BackgroundTasks, zeby
-    wznowienie bylo automatyczne.
+    Restart procesu w trakcie ekstrakcji NIE gubi już zrobionej pracy -
+    `intake.extract_batch` jest wznawialna (commituje każde rozpoznane
+    zdjęcie i każdy domknięty egzemplarz na bieżąco) - traci się tylko
+    fakt bycia "w toku": `_running` żyje wyłącznie w pamięci procesu, więc
+    po restarcie batch_detail pokaże przycisk "Wznów rozpoznawanie"
+    zamiast paska postępu, dopóki operator go nie kliknie. Docelowo:
+    prawdziwa kolejka zadań (np. arq/celery) zamiast BackgroundTasks, żeby
+    wznowienie było automatyczne.
     """
     try:
         async with get_sessionmaker()() as session:
             await intake.extract_batch(session, batch_id)
     except Exception:
-        logger.exception("Ekstrakcja partii %s w tle nie powiodla sie.", batch_id)
+        logger.exception("Ekstrakcja partii %s w tle nie powiodła się.", batch_id)
     finally:
         _running.discard(batch_id)
 
 
 async def _run_publish_batch(batch_id: int) -> None:
-    """Uruchamia `publish_batch` w tle, na wlasnej sesji DB.
+    """Uruchamia `publish_batch` w tle, na własnej sesji DB.
 
-    Wlasna sesja z tego samego powodu co `_run_extraction`: zadanie HTTP,
-    ktore wystawilo to zadanie w tle, juz zakonczylo odpowiedz, a masowa
-    publikacja partii moze trwac minuty (150 pozycji x ~1,3s, patrz
+    Własna sesja z tego samego powodu co `_run_extraction`: zadanie HTTP,
+    które wystawiło to zadanie w tle, już zakończyło odpowiedź, a masowa
+    publikacja partii może trwać minuty (150 pozycji x ~1,3s, patrz
     `intake.publish_batch`). Wynik trafia do `_publish_results` PRZED
-    usunieciem batch_id z `_running_publish`, zeby poling
-    `/publish-progress` nigdy nie zobaczyl "juz nie biegnie" bez gotowego
+    usunięciem batch_id z `_running_publish`, żeby poling
+    `/publish-progress` nigdy nie zobaczył "już nie biegnie" bez gotowego
     wyniku do pokazania.
     """
     try:
@@ -135,7 +135,7 @@ async def _run_publish_batch(batch_id: int) -> None:
             _publish_results[batch_id] = await intake.publish_batch(session, batch_id)
     except Exception:
         logger.exception(
-            "Masowa publikacja partii %s w tle nie powiodla sie.", batch_id
+            "Masowa publikacja partii %s w tle nie powiodła się.", batch_id
         )
     finally:
         _running_publish.discard(batch_id)
@@ -143,7 +143,7 @@ async def _run_publish_batch(batch_id: int) -> None:
 
 @router.get("/batches", response_class=HTMLResponse)
 async def batches(request: Request, session: SessionDep) -> HTMLResponse:
-    """Renderuje liste wszystkich partii, od najnowszej."""
+    """Renderuje listę wszystkich partii, od najnowszej."""
     return templates.TemplateResponse(
         request=request,
         name="batches.html",
@@ -156,16 +156,16 @@ async def create_batch(
     request: Request,
     session: SessionDep,
     files: Annotated[
-        list[UploadFile], File(description="Zdjecia w kolejnosci wgrania.")
+        list[UploadFile], File(description="Zdjęcia w kolejności wgrania.")
     ],
 ) -> HTMLResponse:
-    """Tworzy nowa partie z plikow wgranych przez formularz w przegladarce.
+    """Tworzy nową partię z plików wgranych przez formularz w przeglądarce.
 
-    Zwykly POST/Redirect/Get (bez HTMX): po sukcesie 303 See Other na
-    `/ui/batches/{batch_id}`, zeby odswiezenie strony nie powtorzylo uploadu
-    (307 by to zrobilo). Blad domenowy re-renderuje liste partii z
-    komunikatem, statusem 200 - nie ma dokad przekierowac, bo partia nie
-    powstala.
+    Zwykły POST/Redirect/Get (bez HTMX): po sukcesie 303 See Other na
+    `/ui/batches/{batch_id}`, żeby odświeżenie strony nie powtórzyło uploadu
+    (307 by to zrobiło). Błąd domenowy re-renderuje listę partii z
+    komunikatem, statusem 200 - nie ma dokąd przekierować, bo partia nie
+    powstała.
     """
     payload = [(f.filename, await f.read()) for f in files]
     try:
@@ -212,22 +212,22 @@ async def batch_detail(
         done, total = await intake.extraction_progress(session, batch_id)
         context.update(_progress_context(batch_id, done, total))
         # Kursor dla pierwszego pollu (partials/batch_progress.html): karty
-        # do tego id sa juz wyrenderowane na stronie (batch_items.html
-        # powyzej) - bez tego pierwszy poling dostalby je jako "nowe" i
-        # dopial drugi raz (patrz batch_extraction_progress/after_item_id).
+        # do tego id są już wyrenderowane na stronie (batch_items.html
+        # powyżej) - bez tego pierwszy poling dostałby je jako "nowe" i
+        # dopiął drugi raz (patrz batch_extraction_progress/after_item_id).
         context["last_item_id"] = items[-1].id if items else 0
     elif publishing:
         done, total = await intake.publish_progress(session, batch_id)
         context.update(_progress_context(batch_id, done, total))
     elif batch_status in ("extracting", "failed"):
-        # 'extracting' bez batch_id w `_running` = proces zostal zabity w
-        # trakcie (restart, OOM) - zaden Python-owy except nie zdazyl
-        # ustawic 'failed'. Wznowienie jest tak samo bezpieczne jak po
-        # czystym bledzie (`intake.extract_batch` jest wznawialna).
+        # 'extracting' bez batch_id w `_running` = proces został zabity w
+        # trakcie (restart, OOM) - żaden Python-owy except nie zdążył
+        # ustawić 'failed'. Wznowienie jest tak samo bezpieczne jak po
+        # czystym błędzie (`intake.extract_batch` jest wznawialna).
         context["extraction_error"] = (
-            "Rozpoznawanie zostalo przerwane. Wznowienie kontynuuje od "
-            "miejsca przerwania (juz rozpoznane zdjecia i zapisane "
-            "egzemplarze nie zostana utworzone drugi raz)."
+            "Rozpoznawanie zostało przerwane. Wznowienie kontynuuje od "
+            "miejsca przerwania (już rozpoznane zdjęcia i zapisane "
+            "egzemplarze nie zostaną utworzone drugi raz)."
         )
     return templates.TemplateResponse(
         request=request, name="batch_detail.html", context=context
@@ -241,16 +241,16 @@ async def start_extraction(
     background_tasks: BackgroundTasks,
     session: SessionDep,
 ) -> HTMLResponse:
-    """Wystawia (lub wznawia) rozpoznanie partii w tle i zwraca pasek postepu.
+    """Wystawia (lub wznawia) rozpoznanie partii w tle i zwraca pasek postępu.
 
-    Guard idempotencji: TYLKO jesli ekstrakcja tej partii juz biegnie w
+    Guard idempotencji: TYLKO jeśli ekstrakcja tej partii już biegnie w
     tym procesie (`_running`) NIE wystawia drugiego zadania - to jedyny
-    warunek, ktory ma teraz znaczenie. `intake.extract_batch` jest
-    wznawialna: ponowne wywolanie na juz ukonczonej albo czesciowo
-    przetworzonej partii jest bezpieczne samo w sobie (pomija zdjecia z
-    wypelnionym ai_raw i egzemplarze juz zapisane), wiec w odroznieniu od
-    poprzedniej (atomowej) wersji nie trzeba juz sprawdzac, czy partia ma
-    juz pozycje.
+    warunek, który ma teraz znaczenie. `intake.extract_batch` jest
+    wznawialna: ponowne wywołanie na już ukończonej albo częściowo
+    przetworzonej partii jest bezpieczne samo w sobie (pomija zdjęcia z
+    wypełnionym ai_raw i egzemplarze już zapisane), więc w odróżnieniu od
+    poprzedniej (atomowej) wersji nie trzeba już sprawdzać, czy partia ma
+    już pozycje.
     """
     items = await intake.list_items(session, batch_id)
     last_item_id = items[-1].id if items else 0
@@ -275,18 +275,18 @@ async def batch_extraction_progress(
 ) -> HTMLResponse:
     """Fragment polingowany przez HTMX co 2s w trakcie ekstrakcji.
 
-    Dopina WYLACZNIE nowo domkniete egzemplarze (id > after_item_id) do
+    Dopina WYŁĄCZNIE nowo domknięte egzemplarze (id > after_item_id) do
     #batch-items przez OOB append (`hx-swap-oob="beforeend"` -
     `partials/batch_items_append.html`) - NIGDY nie przerenderowywuje
-    calej listy, zeby nie skasowac niezapisanej edycji operatora w juz
-    wyswietlonej karcie. Kazda odpowiedz osadza nowy `after_item_id` w
-    `hx-get` kolejnego pollu (`partials/batch_progress.html`), wiec
-    nastepne zapytanie poprosi tylko o pozycje nowsze niz ta juz pokazana.
+    całej listy, żeby nie skasować niezapisanej edycji operatora w już
+    wyświetlonej karcie. Każda odpowiedź osadza nowy `after_item_id` w
+    `hx-get` kolejnego pollu (`partials/batch_progress.html`), więc
+    następne zapytanie poprosi tylko o pozycje nowsze niż ta już pokazana.
 
-    Ekstrakcja nadal w toku -> pasek postepu (poling siebie). Zakonczona
+    Ekstrakcja nadal w toku -> pasek postępu (poling siebie). Zakończona
     powodzeniem -> pusty #batch-progress bez `hx-trigger` (poling ustaje,
-    karty zostaja). Zakonczona bledem -> przycisk "Wznow rozpoznawanie"
-    (kontynuuje od miejsca przerwania) z komunikatem bledu.
+    karty zostają). Zakończona błędem -> przycisk "Wznów rozpoznawanie"
+    (kontynuuje od miejsca przerwania) z komunikatem błędu.
     """
     new_items = await intake.list_items_after(session, batch_id, after_item_id)
     context: dict[str, object] = {
@@ -309,7 +309,7 @@ async def batch_extraction_progress(
         # patrz analogiczny komentarz w batch_detail o statusie 'extracting'
         # bez batch_id w `_running` (proces zabity w trakcie).
         context["extraction_error"] = (
-            "Rozpoznawanie zostalo przerwane. Wznowienie kontynuuje od "
+            "Rozpoznawanie zostało przerwane. Wznowienie kontynuuje od "
             "miejsca przerwania."
         )
     return templates.TemplateResponse(
@@ -324,12 +324,12 @@ async def start_publish_batch(
     background_tasks: BackgroundTasks,
     session: SessionDep,
 ) -> HTMLResponse:
-    """Wystawia masowa publikacje partii w tle i zwraca fragment postepu.
+    """Wystawia masową publikację partii w tle i zwraca fragment postępu.
 
     Guard idempotencji analogiczny do `start_extraction`: `hx-disabled-elt`
-    na przycisku juz blokuje powtorne kliknieicie w przegladarce, ale ten
-    guard chroni tez przed wyscigiem/podwojnym zdarzeniem HTMX - dopoki
-    poprzedni przebieg partii nie skonczy, nie wystawia drugiego.
+    na przycisku już blokuje powtórne kliknięcie w przeglądarce, ale ten
+    guard chroni też przed wyścigiem/podwójnym zdarzeniem HTMX - dopóki
+    poprzedni przebieg partii nie skończy, nie wystawia drugiego.
     """
     if batch_id not in _running_publish:
         _running_publish.add(batch_id)
@@ -347,16 +347,16 @@ async def start_publish_batch(
 async def batch_publish_progress(
     request: Request, batch_id: int, session: SessionDep
 ) -> HTMLResponse:
-    """Fragment polingowany przez HTMX co 2s, dopoki masowa publikacja biegnie.
+    """Fragment polingowany przez HTMX co 2s, dopóki masowa publikacja biegnie.
 
-    Nadal w toku -> pasek postepu z tym samym `hx-get` (poling siebie).
-    Zakonczona -> podsumowanie przebiegu (`_publish_results`, zdjete z
-    rejestru - jednorazowe) razem z odswiezonymi kartami pozycji (OOB
-    swap `#batch-items`, bo statusy pozycji sie zmienily) i przyciskiem
-    "Publikuj wszystkie" ponownie, jesli zostaly jeszcze pozycje
-    pending/approved (czesciowe niepowodzenie albo przerwanie circuit
-    breakerem). Bez `hx-trigger` w zadnej z tych galezi -> poling
-    zatrzymuje sie sam.
+    Nadal w toku -> pasek postępu z tym samym `hx-get` (poling siebie).
+    Zakończona -> podsumowanie przebiegu (`_publish_results`, zdjęte z
+    rejestru - jednorazowe) razem z odświeżonymi kartami pozycji (OOB
+    swap `#batch-items`, bo statusy pozycji się zmieniły) i przyciskiem
+    "Publikuj wszystkie" ponownie, jeśli zostały jeszcze pozycje
+    pending/approved (częściowe niepowodzenie albo przerwanie circuit
+    breakerem). Bez `hx-trigger` w żadnej z tych gałęzi -> poling
+    zatrzymuje się sam.
     """
     if batch_id in _running_publish:
         done, total = await intake.publish_progress(session, batch_id)
@@ -386,11 +386,11 @@ async def batch_publish_progress(
 
 @router.post("/listings/sync-pending", response_class=HTMLResponse)
 async def sync_pending_listings(request: Request, session: SessionDep) -> HTMLResponse:
-    """Odswieza statusy ofert czekajacych na aktywacje w OLX (przycisk w naglowku).
+    """Odświeża statusy ofert czekających na aktywację w OLX (przycisk w nagłówku).
 
-    Woła ta sama funkcje serwisowa co `POST /api/listings/sync-pending`.
-    Blad OLX (np. brak autoryzacji) nie jest wyjatkiem HTTP - fragment
-    pokazuje komunikat, status pozostaje 200, zeby HTMX podmienil DOM.
+    Woła tą samą funkcję serwisową co `POST /api/listings/sync-pending`.
+    Błąd OLX (np. brak autoryzacji) nie jest wyjątkiem HTTP - fragment
+    pokazuje komunikat, status pozostaje 200, żeby HTMX podmienił DOM.
     """
     try:
         result = await intake.sync_pending_listings(session)
@@ -417,17 +417,17 @@ async def save_item(
     condition: Annotated[str, Form()] = "",
     platform_id: Annotated[str, Form()] = "",
 ) -> HTMLResponse:
-    """Zapisuje reczna korekte pol pozycji.
+    """Zapisuje ręczną korektę pól pozycji.
 
-    Formularz HTML przysyla wszystkie pola jako tekst (puste = pusty string),
-    wiec konwersja na typy domenowe odbywa sie tutaj - `IntakeItemUpdate`
-    dostaje juz wartosci wlasciwego typu.
+    Formularz HTML przysyła wszystkie pola jako tekst (puste = pusty string),
+    więc konwersja na typy domenowe odbywa się tutaj - `IntakeItemUpdate`
+    dostaje już wartości właściwego typu.
     """
     try:
         price = Decimal(price_pln) if price_pln.strip() else None
     except InvalidOperation:
         current = await intake.get_item(session, item_id)
-        return await _card(request, session, current, "Cena musi byc liczba.")
+        return await _card(request, session, current, "Cena musi być liczbą.")
 
     payload = intake.IntakeItemUpdate(
         title=title.strip() or None,
@@ -448,7 +448,7 @@ async def save_item(
 async def approve_item(
     request: Request, item_id: int, session: SessionDep
 ) -> HTMLResponse:
-    """Zatwierdza pozycje poczekalni."""
+    """Zatwierdza pozycję poczekalni."""
     try:
         item = await intake.approve_item(session, item_id)
     except intake.IntakeError as exc:
@@ -462,7 +462,7 @@ async def approve_item(
 async def reject_item(
     request: Request, item_id: int, session: SessionDep
 ) -> HTMLResponse:
-    """Odrzuca pozycje poczekalni."""
+    """Odrzuca pozycję poczekalni."""
     try:
         item = await intake.reject_item(session, item_id)
     except intake.IntakeError as exc:
@@ -476,7 +476,7 @@ async def reject_item(
 async def publish_item(
     request: Request, item_id: int, session: SessionDep
 ) -> HTMLResponse:
-    """Zatwierdza i publikuje pozycje poczekalni na OLX. Operacja nieodwracalna."""
+    """Zatwierdza i publikuje pozycję poczekalni na OLX. Operacja nieodwracalna."""
     try:
         item = await intake.approve_and_publish(session, item_id)
     except (intake.IntakeError, olx.OlxError) as exc:

@@ -370,7 +370,7 @@ def test_error_detail_cialo_puste_opisuje_blokade_waf() -> None:
     response = _response(403, body=None)
 
     assert olx._error_detail(response) == (
-        "pusta odpowiedz — prawdopodobnie blokada WAF/CloudFront"
+        "pusta odpowiedź — prawdopodobnie blokada WAF/CloudFront"
     )
 
 
