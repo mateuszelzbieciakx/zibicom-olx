@@ -23,8 +23,7 @@
 <table class="w-full text-left border-collapse">
     <thead>
         <tr class="border-b text-sm text-slate-500">
-            <th class="py-2 pr-4">ID</th>
-            <th class="py-2 pr-4">Data</th>
+            <th class="py-2 pr-4">Partia</th>
             <th class="py-2 pr-4">Zdjęcia</th>
             <th class="py-2 pr-4">Pozycje</th>
             <th class="py-2 pr-4">Statusy</th>
@@ -34,9 +33,8 @@
         {% for batch in batches %}
         <tr class="border-b hover:bg-slate-100">
             <td class="py-2 pr-4">
-                <a class="text-blue-600 hover:underline" href="/ui/batches/{{ batch.id }}">#{{ batch.id }}</a>
+                <a class="text-blue-600 hover:underline" href="/ui/batches/{{ batch.id }}">{{ batch.created_at | batch_label }}</a>
             </td>
-            <td class="py-2 pr-4">{{ batch.created_at }}</td>
             <td class="py-2 pr-4">{{ batch.photo_count }}</td>
             <td class="py-2 pr-4">{{ batch.item_count }}</td>
             <td class="py-2 pr-4">

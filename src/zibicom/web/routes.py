@@ -7,9 +7,11 @@ inna reprezentacja. Logika biznesowa nie może istnieć w dwóch kopiach.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Annotated
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -25,6 +27,36 @@ templates = Jinja2Templates(directory=Path(__file__).parent / "templates")
 logger = logging.getLogger(__name__)
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
+
+# Sklep działa w Polsce - `intake_batch.created_at` jest w UTC (TIMESTAMPTZ),
+# więc etykieta partii (`_batch_label`) konwertuje na ten czas dopiero przy
+# wyświetlaniu, żeby operator widział godzinę dostawy, nie godzinę serwera.
+_LOCAL_TZ = ZoneInfo("Europe/Warsaw")
+
+
+def _batch_label(created_at: datetime) -> str:
+    """Formatuje etykietę partii z datą i godziną utworzenia w czasie lokalnym.
+
+    Zastępuje dawną etykietę "Partia {id}" - przy wielu dostawach dziennie
+    numer partii nic operatorowi nie mówi, a data i godzina od razu
+    pozwalają rozpoznać, o którą dostawę chodzi. Godzina jest wymagana -
+    sama data nie odróżnia dwóch partii przyjętych tego samego dnia. Id
+    partii zostaje wyłącznie w adresie URL (`/ui/batches/{id}`), do
+    diagnostyki i zapytań do bazy.
+
+    Args:
+        created_at: Moment utworzenia partii (`intake_batch.created_at`,
+            UTC - TIMESTAMPTZ).
+
+    Returns:
+        Etykieta w formacie "Partia DD.MM.RRRR, GG:MM" w czasie lokalnym
+        (Europe/Warsaw).
+    """
+    local = created_at.astimezone(_LOCAL_TZ)
+    return f"Partia {local.strftime('%d.%m.%Y, %H:%M')}"
+
+
+templates.env.filters["batch_label"] = _batch_label
 
 # Partie, których ekstrakcja aktualnie biegnie w tle (guard idempotencji dla
 # POST /batches/{id}/extract - żyje tylko w pamięci procesu, patrz komentarz
@@ -90,6 +122,16 @@ async def _batch_status(session: AsyncSession, batch_id: int) -> str:
     return (
         await session.execute(
             text("SELECT status::TEXT FROM intake_batch WHERE id = :batch_id"),
+            {"batch_id": batch_id},
+        )
+    ).scalar_one()
+
+
+async def _batch_created_at(session: AsyncSession, batch_id: int) -> datetime:
+    """Zwraca moment utworzenia partii (`intake_batch.created_at`), do etykiety."""
+    return (
+        await session.execute(
+            text("SELECT created_at FROM intake_batch WHERE id = :batch_id"),
             {"batch_id": batch_id},
         )
     ).scalar_one()
@@ -197,8 +239,10 @@ async def batch_detail(
         1 for item in items if item.status in ("pending", "approved")
     )
     batch_status = await _batch_status(session, batch_id)
+    batch_label = _batch_label(await _batch_created_at(session, batch_id))
     context: dict[str, object] = {
         "batch_id": batch_id,
+        "batch_label": batch_label,
         "photo_count": photo_count,
         "items": items,
         "platforms": await intake.list_platforms(session),
