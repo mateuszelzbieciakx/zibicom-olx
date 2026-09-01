@@ -871,6 +871,63 @@ async def test_publish_item_blad_olx_wycofuje_cala_transakcje(
 
 
 # --------------------------------------------------------------------------
+# approve_and_publish
+# --------------------------------------------------------------------------
+
+
+async def test_approve_and_publish_zatwierdza_i_publikuje_pending_pozycje(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, item_id = await _create_pending_item(db_session)
+
+    monkeypatch.setattr(intake.olx, "get_access_token", AsyncMock(return_value="AT-1"))
+    monkeypatch.setattr(
+        intake.olx,
+        "create_advert",
+        AsyncMock(return_value={"id": 12345, "status": "new"}),
+    )
+
+    published = await intake.approve_and_publish(db_session, item_id)
+
+    assert published.status == "published"
+    assert published.listing_id is not None
+
+
+async def test_approve_and_publish_bez_tytulu_i_ceny_rzuca_czytelny_blad(
+    db_session: AsyncSession,
+) -> None:
+    _, item_id = await _create_item(db_session, title=None, price_pln=None)
+
+    with pytest.raises(intake.IntakeValidationError, match="tytulu"):
+        await intake.approve_and_publish(db_session, item_id)
+
+
+async def test_approve_and_publish_juz_opublikowanej_rzuca_blad_bez_wywolania_olx(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Guard idempotencji: drugi klik po publikacji nie wywoluje OLX ponownie."""
+    _, item_id = await _create_pending_item(db_session)
+
+    monkeypatch.setattr(intake.olx, "get_access_token", AsyncMock(return_value="AT-1"))
+    create_advert = AsyncMock(return_value={"id": 12345, "status": "new"})
+    monkeypatch.setattr(intake.olx, "create_advert", create_advert)
+
+    await intake.approve_and_publish(db_session, item_id)
+
+    with pytest.raises(intake.IntakeValidationError, match="juz powiazana"):
+        await intake.approve_and_publish(db_session, item_id)
+
+    create_advert.assert_called_once()
+
+
+async def test_approve_and_publish_nieistniejacej_pozycji_rzuca_not_found(
+    db_session: AsyncSession,
+) -> None:
+    with pytest.raises(intake.IntakeNotFoundError):
+        await intake.approve_and_publish(db_session, 999_999)
+
+
+# --------------------------------------------------------------------------
 # publish_batch
 # --------------------------------------------------------------------------
 

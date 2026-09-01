@@ -1278,6 +1278,54 @@ async def publish_item(session: AsyncSession, item_id: int) -> IntakeItemView:
     return await _get_item_view(session, item_id)
 
 
+async def approve_and_publish(session: AsyncSession, item_id: int) -> IntakeItemView:
+    """Zatwierdza i publikuje pozycje poczekalni w jednej akcji operatora.
+
+    Laczy `approve_item` i `publish_item` (wywolane sekwencyjnie, kazda ze
+    swoim commitem - patrz ich docstringi) w jeden klik na karcie: przeglad
+    pozycji i tak odbywa sie wzrokowo przed kliknieciem "Publikuj", wiec
+    osobny krok "Zatwierdz" byl zbedny. Posrednie przejscie statusu
+    pending -> approved -> published zostaje mimo to zapisane w bazie
+    (sciezka audytu) - to dwie transakcje, nie jedna atomowa.
+
+    Zero duplikacji logiki: `approve_item`/`publish_item` zostaja nietkniete
+    i nadal sa uzywane bezposrednio przez JSON API (POST .../approve,
+    POST .../publish) oraz `publish_batch`.
+
+    Args:
+        session: Sesja bazy danych.
+        item_id: Identyfikator pozycji.
+
+    Returns:
+        Opublikowany widok pozycji (status='published', wypelnione listing_id).
+
+    Raises:
+        IntakeNotFoundError: Gdy pozycja nie istnieje.
+        IntakeValidationError: Gdy pozycja jest juz powiazana z listingiem
+            (guard idempotencji nizej - zastepuje usuwane z UI potwierdzenie
+            w przegladarce jako realna ochrona przed dwuklikiem), albo gdy
+            walidacja `approve_item`/`publish_item` sie nie powiedzie (brak
+            tytulu/ceny/platformy/kategorii OLX itd).
+        olx.OlxError: Gdy publikacja na OLX sie nie powiedzie.
+    """
+    current = await _get_item_view(session, item_id)
+    if current.listing_id is not None:
+        olx_advert_id = (
+            await session.execute(
+                text("SELECT olx_advert_id FROM listing WHERE id = :listing_id"),
+                {"listing_id": current.listing_id},
+            )
+        ).scalar_one_or_none()
+        detail = f", olx_advert_id={olx_advert_id}" if olx_advert_id else ""
+        raise IntakeValidationError(
+            f"Pozycja jest juz powiazana z listingiem {current.listing_id}"
+            f"{detail} - nie mozna opublikowac ponownie."
+        )
+
+    await approve_item(session, item_id)
+    return await publish_item(session, item_id)
+
+
 async def preview_publish_item(session: AsyncSession, item_id: int) -> dict[str, Any]:
     """Buduje podglad payloadu OLX dla pozycji, BEZ publikacji.
 

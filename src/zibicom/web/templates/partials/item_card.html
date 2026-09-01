@@ -67,24 +67,18 @@
             {% endif %}
             {% if item.status == "pending" %}
             <button type="button"
-                    hx-post="/ui/items/{{ item.id }}/approve"
-                    hx-target="#item-{{ item.id }}" hx-swap="outerHTML"
-                    class="px-3 py-1 bg-slate-800 text-white rounded text-sm">
-                Zatwierdz
-            </button>
-            <button type="button"
                     hx-post="/ui/items/{{ item.id }}/reject"
                     hx-target="#item-{{ item.id }}" hx-swap="outerHTML"
                     hx-confirm="Odrzucic pozycje?"
                     class="px-3 py-1 border rounded text-sm text-slate-500">
                 Odrzuc
             </button>
-            {% elif item.status == "approved" %}
+            {% endif %}
+            {% if item.status in ("pending", "approved") %}
             <button type="button"
                     hx-post="/ui/items/{{ item.id }}/publish"
                     hx-target="#item-{{ item.id }}" hx-swap="outerHTML"
                     hx-disabled-elt="this"
-                    hx-confirm="Opublikowac na OLX? Operacja nieodwracalna."
                     class="px-3 py-1 bg-emerald-700 text-white rounded text-sm">
                 Publikuj
             </button>

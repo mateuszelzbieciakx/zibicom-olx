@@ -471,9 +471,9 @@ async def reject_item(
 async def publish_item(
     request: Request, item_id: int, session: SessionDep
 ) -> HTMLResponse:
-    """Publikuje zatwierdzona pozycje na OLX. Operacja nieodwracalna."""
+    """Zatwierdza i publikuje pozycje poczekalni na OLX. Operacja nieodwracalna."""
     try:
-        item = await intake.publish_item(session, item_id)
+        item = await intake.approve_and_publish(session, item_id)
     except (intake.IntakeError, olx.OlxError) as exc:
         return await _card(
             request, session, await intake.get_item(session, item_id), str(exc)

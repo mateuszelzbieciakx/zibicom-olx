@@ -268,6 +268,21 @@ async def publish_item(item_id: int, session: SessionDep) -> intake.IntakeItemVi
         raise _http_exception_for(exc) from exc
 
 
+@router.post(
+    "/api/intake/items/{item_id}/approve-and-publish",
+    response_model=intake.IntakeItemView,
+    tags=["intake"],
+)
+async def approve_and_publish_item(
+    item_id: int, session: SessionDep
+) -> intake.IntakeItemView:
+    """Zatwierdza i publikuje pozycje poczekalni w jednym kroku."""
+    try:
+        return await intake.approve_and_publish(session, item_id)
+    except (intake.IntakeError, olx.OlxError) as exc:
+        raise _http_exception_for(exc) from exc
+
+
 @router.get(
     "/api/intake/items/{item_id}/publish/preview",
     response_model=dict[str, Any],
