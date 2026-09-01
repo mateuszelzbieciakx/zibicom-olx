@@ -21,8 +21,8 @@
             <input name="title" value="{{ item.title or '' }}"
                    class="w-full border rounded px-2 py-1 font-medium">
             <div class="flex gap-2">
-                <input name="price_pln" type="number" step="0.01" min="0"
-                       value="{{ item.price_pln if item.price_pln is not none else '' }}"
+                <input name="price_pln" type="number" step="1" min="0"
+                       value="{{ item.price_pln | int if item.price_pln is not none else '' }}"
                        class="w-24 border rounded px-2 py-1">
                 <select name="condition" class="border rounded px-2 py-1">
                     <option value="used" {% if item.condition == 'used' %}selected{% endif %}>uzywana</option>
@@ -39,7 +39,7 @@
             <div class="font-medium">{{ item.title or "(brak tytulu)" }}</div>
             <div class="text-sm text-slate-600">
                 {{ item.platform_name or item.platform_other or "?" }} &middot;
-                {{ item.price_pln if item.price_pln is not none else "?" }} zl &middot;
+                {{ item.price_pln | int if item.price_pln is not none else "?" }} zl &middot;
                 {{ item.condition or "?" }}
             </div>
             {% endif %}
